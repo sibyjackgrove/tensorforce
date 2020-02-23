@@ -19,7 +19,7 @@ import unittest
 from test.unittest_agent import UnittestAgent
 
 
-class TestPolicyAgent(UnittestAgent, unittest.TestCase):
+class TestTensorforceAgent(UnittestAgent, unittest.TestCase):
 
     directory = 'test-recording'
 
@@ -32,18 +32,21 @@ class TestPolicyAgent(UnittestAgent, unittest.TestCase):
         agent, environment = self.prepare(
             states=states, actions=actions, require_all=True,
             update=dict(unit='episodes', batch_size=1),
-            policy=dict(network=dict(type='auto', size=8, internal_rnn=False))
+            policy=dict(network=dict(type='auto', size=8, depth=1, internal_rnn=False))
             # TODO: shouldn't be necessary!
         )
-        agent.initialize()
 
         for n in range(2):
             states = environment.reset()
+            internals = agent.initial_internals()
             terminal = False
             while not terminal:
-                actions = agent.act(states=states, independent=True)
+                actions, internals = agent.act(states=states, internals=internals, independent=True)
                 next_states, terminal, reward = environment.execute(actions=actions)
-                agent.experience(states=states, actions=actions, terminal=terminal, reward=reward)
+                agent.experience(
+                    states=states, internals=internals, actions=actions, terminal=terminal,
+                    reward=reward
+                )
                 states = next_states
             agent.update()
 
@@ -57,13 +60,11 @@ class TestPolicyAgent(UnittestAgent, unittest.TestCase):
         actions = dict(type=self.__class__.replacement_action, shape=())
 
         agent, environment = self.prepare(
-            states=states, actions=actions, require_all=True, buffer_observe=False, update=1,
-            policy=dict(network=dict(type='auto', size=8, internal_rnn=False)),
+            states=states, actions=actions, require_all=True, update=1,
+            policy=dict(network=dict(type='auto', size=8, depth=1, internal_rnn=False)),
             # TODO: shouldn't be necessary!
             recorder=dict(directory=self.__class__.directory)
         )
-
-        agent.initialize()
 
         for _ in range(3):
             states = environment.reset()

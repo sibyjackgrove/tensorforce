@@ -15,14 +15,16 @@
 
 from copy import deepcopy
 from datetime import datetime
+import os
 import sys
 import warnings
 
-from tensorforce.agents import Agent
+from tensorforce import Agent, Environment, Runner, TensorforceError
 from tensorforce.core.layers import Layer
-from tensorforce.environments import Environment
-from tensorforce.execution import Runner
 from test.unittest_environment import UnittestEnvironment
+
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 
 class UnittestBase(object):
@@ -36,7 +38,7 @@ class UnittestBase(object):
     num_timesteps = None
 
     # Environment
-    timestep_range = (1, 5)
+    min_timesteps = 1
     states = dict(
         bool_state=dict(type='bool', shape=(1,)),
         int_state=dict(type='int', shape=(2,), num_values=4),
@@ -49,6 +51,7 @@ class UnittestBase(object):
         float_action=dict(type='float', shape=(1, 1)),
         bounded_action=dict(type='float', shape=(2,), min_value=-0.5, max_value=0.5)
     )
+    max_episode_timesteps = 5
 
     # Exclude action types
     exclude_bool_action = False
@@ -58,8 +61,8 @@ class UnittestBase(object):
 
     # Agent
     agent = dict(
-        update=4, policy=dict(network=dict(type='auto', size=8, internal_rnn=2)),
-        objective='policy_gradient', reward_estimation=dict(horizon=2)
+        update=4, policy=dict(network=dict(type='auto', size=8, depth=1, internal_rnn=2)),
+        objective='policy_gradient', reward_estimation=dict(horizon=3)
     )
 
     # Tensorforce config
@@ -98,43 +101,37 @@ class UnittestBase(object):
             sys.stdout.write('.')
             sys.stdout.flush()
 
-    def prepare(
-        self, environment=None, timestep_range=None, states=None, actions=None,
+    def environment_spec(
+        self, max_episode_timesteps=None, min_timesteps=None, states=None, actions=None,
         exclude_bool_action=False, exclude_int_action=False, exclude_float_action=False,
-        exclude_bounded_action=False, require_observe=False, require_all=False, **agent
+        exclude_bounded_action=False
     ):
-        """
-        Generic unit-test preparation.
-        """
-        Layer.layers = None
+        if states is None:
+            states = deepcopy(self.__class__.states)
 
-        if environment is None:
-            if states is None:
-                states = deepcopy(self.__class__.states)
+        if actions is None:
+            actions = deepcopy(self.__class__.actions)
+            if exclude_bool_action or self.__class__.exclude_bool_action:
+                actions.pop('bool_action')
+            if exclude_int_action or self.__class__.exclude_int_action:
+                actions.pop('int_action')
+            if exclude_float_action or self.__class__.exclude_float_action:
+                actions.pop('float_action')
+            if exclude_bounded_action or self.__class__.exclude_bounded_action:
+                actions.pop('bounded_action')
 
-            if actions is None:
-                actions = deepcopy(self.__class__.actions)
-                if exclude_bool_action or self.__class__.exclude_bool_action:
-                    actions.pop('bool_action')
-                if exclude_int_action or self.__class__.exclude_int_action:
-                    actions.pop('int_action')
-                if exclude_float_action or self.__class__.exclude_float_action:
-                    actions.pop('float_action')
-                if exclude_bounded_action or self.__class__.exclude_bounded_action:
-                    actions.pop('bounded_action')
+        if min_timesteps is None:
+            min_timesteps = self.__class__.min_timesteps
 
-            if timestep_range is None:
-                timestep_range = self.__class__.timestep_range
+        if max_episode_timesteps is None:
+            max_episode_timesteps = self.__class__.max_episode_timesteps
 
-            environment = UnittestEnvironment(
-                states=states, actions=actions, timestep_range=timestep_range
-            )
+        return dict(
+            environment=UnittestEnvironment, max_episode_timesteps=max_episode_timesteps,
+            states=states, actions=actions, min_timesteps=min_timesteps
+        )
 
-        elif timestep_range is not None:
-            raise TensorforceError.unexpected()
-
-        environment = Environment.create(environment=environment)
-
+    def agent_spec(self, require_observe=False, require_all=False, **agent):
         for key, value in self.__class__.agent.items():
             if key not in agent:
                 agent[key] = value
@@ -142,32 +139,87 @@ class UnittestBase(object):
         if self.__class__.require_all or require_all:
             config = None
         elif self.__class__.require_observe or require_observe:
-            config = dict(api_functions=['reset', 'act', 'observe'])
+            config = dict(api_functions=['reset', 'act', 'independent_act', 'observe'])
         else:
-            config = dict(api_functions=['reset', 'act'])
+            config = dict(api_functions=['reset', 'act', 'independent_act'])
 
-        agent = Agent.create(agent=agent, environment=environment, config=config)
+        return dict(agent=agent, config=config)
+
+    def prepare(
+        self,
+        # general environment
+        environment=None, max_episode_timesteps=None,
+        # unit-test environment
+        min_timesteps=None, states=None, actions=None,
+        # exclude action types
+        exclude_bool_action=False, exclude_int_action=False, exclude_float_action=False,
+        exclude_bounded_action=False,
+        # agent
+        require_observe=False, require_all=False, **agent
+    ):
+        """
+        Generic unit-test preparation.
+        """
+        Layer.layers = None
+
+        if environment is None:
+            environment = self.environment_spec(
+                max_episode_timesteps=max_episode_timesteps, min_timesteps=min_timesteps,
+                states=states, actions=actions, exclude_bool_action=exclude_bool_action,
+                exclude_int_action=exclude_int_action, exclude_float_action=exclude_float_action,
+                exclude_bounded_action=exclude_bounded_action
+            )
+            environment.pop('max_episode_timesteps')  # given separately below
+
+        elif min_timesteps is not None:
+            raise TensorforceError.unexpected()
+
+        if max_episode_timesteps is None:
+            max_episode_timesteps = self.__class__.max_episode_timesteps
+
+        environment = Environment.create(
+            environment=environment, max_episode_timesteps=max_episode_timesteps
+        )
+
+        agent = self.agent_spec(require_observe=require_observe, require_all=require_all, **agent)
+
+        agent = Agent.create(agent=agent, environment=environment)
 
         return agent, environment
 
     def unittest(
-        self, num_updates=None, num_episodes=None, num_timesteps=None, environment=None,
-        timestep_range=None, states=None, actions=None, exclude_bool_action=False,
-        exclude_int_action=False, exclude_float_action=False, exclude_bounded_action=False,
+        self,
+        # runner
+        num_updates=None, num_episodes=None, num_timesteps=None,
+        # general environment
+        environment=None, max_episode_timesteps=None,
+        # unit-test environment
+        min_timesteps=None, states=None, actions=None,
+        # exclude action types
+        exclude_bool_action=False, exclude_int_action=False, exclude_float_action=False,
+        exclude_bounded_action=False,
+        # agent
         require_observe=False, require_all=False, **agent
     ):
         """
         Generic unit-test.
         """
-        agent, environment = self.prepare(
-            environment=environment, timestep_range=timestep_range, states=states, actions=actions,
-            exclude_bool_action=exclude_bool_action, exclude_int_action=exclude_int_action,
-            exclude_float_action=exclude_float_action,
-            exclude_bounded_action=exclude_bounded_action, require_observe=require_observe,
-            require_all=require_all, **agent
-        )
+        if environment is None:
+            environment = self.environment_spec(
+                max_episode_timesteps=max_episode_timesteps, min_timesteps=min_timesteps,
+                states=states, actions=actions, exclude_bool_action=exclude_bool_action,
+                exclude_int_action=exclude_int_action, exclude_float_action=exclude_float_action,
+                exclude_bounded_action=exclude_bounded_action
+            )
+            environment.pop('max_episode_timesteps')  # given separately below
 
-        self.runner = Runner(agent=agent, environment=environment)
+        elif min_timesteps is not None:
+            raise TensorforceError.unexpected()
+
+        if max_episode_timesteps is None:
+            max_episode_timesteps = self.__class__.max_episode_timesteps
+
+        agent = self.agent_spec(require_observe=require_observe, require_all=require_all, **agent)
 
         assert (num_updates is not None) + (num_episodes is not None) + \
             (num_timesteps is not None) <= 1
@@ -184,10 +236,15 @@ class UnittestBase(object):
             require_all, require_observe, self.__class__.require_all,
             self.__class__.require_observe
         ])
-        self.runner.run(
-            num_episodes=num_episodes, num_timesteps=num_timesteps, num_updates=num_updates,
-            use_tqdm=False, evaluation=evaluation
+
+        runner = Runner(
+            agent=agent, environment=environment, max_episode_timesteps=max_episode_timesteps,
+            evaluation=evaluation
         )
-        self.runner.close()
+        runner.run(
+            num_episodes=num_episodes, num_timesteps=num_timesteps, num_updates=num_updates,
+            use_tqdm=False
+        )
+        runner.close()
 
         self.finished_test()

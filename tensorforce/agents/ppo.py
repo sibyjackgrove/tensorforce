@@ -53,7 +53,7 @@ class ProximalPolicyOptimization(TensorforceAgent):
             <li><b>min_value/max_value</b> (<i>float</i>) &ndash; minimum/maximum action value
             (<span style="color:#00C000"><b>optional</b></span> for type "float").</li>
             </ul>
-        max_episode_timesteps (int > 0): Maximum number of timesteps per episode
+        max_episode_timesteps (int > 0): Upper bound for numer of timesteps per episode
             (<span style="color:#00C000"><b>default</b></span>: not given, better implicitly
             specified via `environment` argument for `Agent.create(...)`).
 
@@ -89,7 +89,7 @@ class ProximalPolicyOptimization(TensorforceAgent):
             none, a float implies none and specifies a custom weight for the critic loss
             (<span style="color:#00C000"><b>default</b></span>: none).
 
-        memory (int > 0): Memory capacity, has to be at least fit around batch_size + 1 episodes
+        memory (int > 0): Memory capacity, has to fit at least around batch_size + 1 episodes
             (<span style="color:#00C000"><b>default</b></span>: minimum required size).
 
         preprocessing (dict[specification]): Preprocessing as layer or list of layers, see
@@ -111,7 +111,7 @@ class ProximalPolicyOptimization(TensorforceAgent):
             regularization, to discourage the policy distribution being too "certain" / spiked
             (<span style="color:#00C000"><b>default</b></span>: 0.0).
 
-        name (string): Agent name, used e.g. for TensorFlow scopes
+        name (string): Agent name, used e.g. for TensorFlow scopes and saver default filename
             (<span style="color:#00C000"><b>default</b></span>: "agent").
         device (string): Device name
             (<span style="color:#00C000"><b>default</b></span>: TensorFlow default).
@@ -120,7 +120,7 @@ class ProximalPolicyOptimization(TensorforceAgent):
             controlled) agents within an environment
             (<span style="color:#00C000"><b>default</b></span>: 1).
         seed (int): Random seed to set for Python, NumPy (both set globally!) and TensorFlow,
-            environment seed has to be set separately for a fully deterministic execution
+            environment seed has to fit at leastset separately for a fully deterministic execution
             (<span style="color:#00C000"><b>default</b></span>: none).
         execution (specification): TensorFlow execution configuration with the following attributes
             (<span style="color:#00C000"><b>default</b></span>: standard): ...
@@ -130,7 +130,7 @@ class ProximalPolicyOptimization(TensorforceAgent):
             <li><b>directory</b> (<i>path</i>) &ndash; saver directory
             (<span style="color:#C00000"><b>required</b></span>).</li>
             <li><b>filename</b> (<i>string</i>) &ndash; model filename
-            (<span style="color:#00C000"><b>default</b></span>: "agent").</li>
+            (<span style="color:#00C000"><b>default</b></span>: agent name).</li>
             <li><b>frequency</b> (<i>int > 0</i>) &ndash; how frequently in seconds to save the
             model (<span style="color:#00C000"><b>default</b></span>: 600 seconds).</li>
             <li><b>load</b> (<i>bool | str</i>) &ndash; whether to load the existing model, or

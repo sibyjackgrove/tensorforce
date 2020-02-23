@@ -6,6 +6,28 @@ This file records all major updates and new features, starting from version 0.5.
 
 ### Latest
 
+
+
+### Version 0.5.4
+
+- DQN/DuelingDQN/DPG argument `memory` now required to be specified explicitly, plus `update_frequency` default changed
+- Removed (temporarily) `conv1d/conv2d_transpose` layers due to TensorFlow gradient problems
+- `Agent`, `Environment` and `Runner` can now be imported via `from tensorforce import ...`
+- New generic reshape layer available as `reshape`
+- Support for batched version of `Agent.act` and `Agent.observe`
+- Support for parallelized remote environments based on Python's `multiprocessing` and `socket` (replacing `tensorforce/contrib/socket_remote_env/` and `tensorforce/environments/environment_process_wrapper.py`), available via `Environment.create(...)`, `Runner(...)` and `run.py`
+- Removed `ParallelRunner` and merged functionality with `Runner`
+- Changed `run.py` arguments
+- Changed independent mode for `Agent.act`: additional argument `internals` and corresponding return value, initial internals via `Agent.initial_internals()`, `Agent.reset()` not required anymore
+- Removed `deterministic` argument for `Agent.act` unless independent mode
+- Added `format` argument to `save`/`load`/`restore` with supported formats `tensorflow`, `numpy` and `hdf5`
+- Changed `save` argument `append_timestep` to `append` with default `None` (instead of `'timesteps'`)
+- Added `get_variable` and `assign_variable` agent functions
+
+
+
+### Version 0.5.3
+
 - Added optional `memory` argument to various agents
 - Improved summary labels, particularly `"entropy"` and `"kl-divergence"`
 - `linear` layer now accepts tensors of rank 1 to 3
@@ -13,10 +35,16 @@ This file records all major updates and new features, starting from version 0.5.
 - Transposed convolution layers (`conv1d/2d_transpose`)
 - Parallel execution functionality contributed by @jerabaul29, currently under `tensorforce/contrib/`
 - Accept string for runner `save_best_agent` argument to specify best model directory different from `saver` configuration
-- Removed `max_episode_timesteps` argument for `Runner.run(...)` and `ParallelRunner.run(...)` in favour of next point
-- New `Environment.create(...)` argument `max_episode_timesteps` to overwrite environment default
+- `saver` argument `steps` removed and `seconds` renamed to `frequency`
+- Moved `Parallel/Runner` argument `max_episode_timesteps` from `run(...)` to constructor
+- New `Environment.create(...)` argument `max_episode_timesteps`
 - TensorFlow 2.0 support
 - Improved Tensorboard summaries recording
+- Summary labels `graph`, `variables` and `variables-histogram` temporarily not working
+- TF-optimizers updated to TensorFlow 2.0 Keras optimizers
+- Added TensorFlow Addons dependency, and support for TFA optimizers
+- Changed unit of `target_sync_frequency` from timesteps to updates for `dqn` and `dueling_dqn` agent
+
 
 
 ### Version 0.5.2

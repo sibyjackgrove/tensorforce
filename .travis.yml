@@ -1,6 +1,5 @@
 language: python
 python:
-  - "3.5"
   - "3.6"
   - "3.7"
 
@@ -9,7 +8,7 @@ branches:
     - master
 
 install:
-  - pip install .[tf,gym,retro]
+  - pip install .[tf,retro]
 
 script:
   - pytest

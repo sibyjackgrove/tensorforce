@@ -1,4 +1,4 @@
-# Copyright 2018 Tensorforce Team. All Rights Reserved.
+# Copyright 2020 Tensorforce Team. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,3 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+
+from json import JSONEncoder
+
+import numpy as np
+
+
+class NumpyJSONEncoder(JSONEncoder):
+    """
+    Numpy-compatible JSON encoder.
+    """
+
+    def default(self, obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+
+        return super().default(obj)

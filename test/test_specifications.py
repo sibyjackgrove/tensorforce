@@ -45,9 +45,8 @@ class TestSpecifications(UnittestBase, unittest.TestCase):
             states=states, policy=dict(network=network), memory=memory
         )
 
-        agent.initialize()
         states = environment.reset()
-
+        # without (initial_)internals
         actions = agent.act(states=states, independent=True)
         states, terminal, reward = environment.execute(actions=actions)
         # agent.observe(terminal=terminal, reward=reward)

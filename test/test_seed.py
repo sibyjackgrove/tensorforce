@@ -17,9 +17,8 @@ import unittest
 
 import numpy as np
 
+from tensorforce import Agent, Environment
 from test.unittest_base import UnittestBase
-from tensorforce.agents import Agent
-from tensorforce.environments import Environment
 
 
 class TestSeed(UnittestBase, unittest.TestCase):
@@ -40,97 +39,73 @@ class TestSeed(UnittestBase, unittest.TestCase):
 
         agent, environment = self.prepare(states=states, actions=actions, exploration=0.5, seed=0)
 
-        agent.initialize()
-
         states = environment.reset()
         # print(states['int_state'])
         # print(states['float_state'])
-        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([3, 1])))
+        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([3, 2])))
         self.assertTrue(
-            expr=np.allclose(a=states['float_state'], b=np.asarray([-2.36958691, 0.8640523]))
+            expr=np.allclose(a=states['float_state'], b=np.asarray([1.95591231, 0.39009332]))
         )
 
         actions = agent.act(states=states)
         # print(actions['int_action'])
         # print(actions['float_action'])
-        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([2, 3])))
+        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([3, 1])))
         self.assertTrue(
-            expr=np.allclose(a=actions['float_action'], b=np.asarray([-0.00944959, 0.47017097]))
+            expr=np.allclose(a=actions['float_action'], b=np.asarray([0.34490278, -0.30759263]))
         )
 
         states, terminal, reward = environment.execute(actions=actions)
         updated = agent.observe(terminal=terminal, reward=reward)
         # print(states['int_state'])
         # print(states['float_state'])
-        # print(terminal, reward)
-        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([0, 1])))
+        # print(terminal, reward, updated)
+        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([0, 2])))
         self.assertTrue(
-            expr=np.allclose(a=states['float_state'], b=np.asarray([1.48838294, 0.32484357]))
+            expr=np.allclose(a=states['float_state'], b=np.asarray([-1.29363428, 0.67702681]))
         )
-        self.assertEqual(first=terminal, second=False)
+        self.assertFalse(expr=terminal)
         self.assertEqual(first=reward, second=0.515908805880605)
         self.assertFalse(expr=updated)
 
         actions = agent.act(states=states)
         # print(actions['int_action'])
         # print(actions['float_action'])
-        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([1, 1])))
+        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([2, 3])))
         self.assertTrue(
-            expr=np.allclose(a=actions['float_action'], b=np.asarray([1.0917394, -0.31452703]))
+            expr=np.allclose(a=actions['float_action'], b=np.asarray([-0.6053257, 0.29353103]))
         )
 
         states, terminal, reward = environment.execute(actions=actions)
         updated = agent.observe(terminal=terminal, reward=reward)
         # print(states['int_state'])
         # print(states['float_state'])
-        # print(terminal, reward)
-        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([0, 2])))
+        # print(terminal, reward, updated)
+        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([1, 0])))
         self.assertTrue(
-            expr=np.allclose(a=states['float_state'], b=np.asarray([-2.36417382, 0.02033418]))
+            expr=np.allclose(a=states['float_state'], b=np.asarray([0.66638308, -0.46071979]))
         )
-        self.assertEqual(first=terminal, second=False)
-        self.assertEqual(first=reward, second=-0.15885683833831)
-        self.assertFalse(expr=updated)
-
-        actions = agent.act(states=states)
-        # print(actions['int_action'])
-        # print(actions['float_action'])
-        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([0, 3])))
-        self.assertTrue(
-            expr=np.allclose(a=actions['float_action'], b=np.asarray([0.6415462, 0.10047044]))
-        )
-
-        states, terminal, reward = environment.execute(actions=actions)
-        updated = agent.observe(terminal=terminal, reward=reward)
-        # print(states['int_state'])
-        # print(states['float_state'])
-        # print(terminal, reward)
-        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([2, 2])))
-        self.assertTrue(
-            expr=np.allclose(a=states['float_state'], b=np.asarray([-1.91440763, 0.07323557]))
-        )
-        self.assertEqual(first=terminal, second=False)
+        self.assertFalse(expr=terminal)
         self.assertEqual(first=reward, second=-0.4821664994140733)
         self.assertFalse(expr=updated)
 
         actions = agent.act(states=states)
         # print(actions['int_action'])
         # print(actions['float_action'])
-        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([1, 2])))
+        self.assertTrue(expr=np.allclose(a=actions['int_action'], b=np.asarray([2, 1])))
         self.assertTrue(
-            expr=np.allclose(a=actions['float_action'], b=np.asarray([0.52505165, 0.27784616]))
+            expr=np.allclose(a=actions['float_action'], b=np.asarray([-0.11170869, -0.51122946]))
         )
-
 
         states, terminal, reward = environment.execute(actions=actions)
         updated = agent.observe(terminal=terminal, reward=reward)
         # print(states['int_state'])
         # print(states['float_state'])
-        # print(terminal, reward)
-        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([1, 0])))
+        # print(terminal, reward, updated)
+        self.assertTrue(expr=np.allclose(a=states['int_state'], b=np.asarray([1, 1])))
         self.assertTrue(
-            expr=np.allclose(a=states['float_state'], b=np.asarray([-1.13980246, 0.78495752]))
+            expr=np.allclose(a=states['float_state'], b=np.asarray([-0.71952667, -0.11861612]))
         )
-        self.assertEqual(first=terminal, second=True)
-        self.assertEqual(first=reward, second=0.02254944273721704)
+        self.assertFalse(expr=terminal)
+        self.assertEqual(first=reward, second=-0.19013172509917142)
         self.assertFalse(expr=updated)

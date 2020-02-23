@@ -52,7 +52,7 @@ class DuelingDQN(TensorforceAgent):
             <li><b>min_value/max_value</b> (<i>float</i>) &ndash; minimum/maximum action value
             (<span style="color:#00C000"><b>optional</b></span> for type "float").</li>
             </ul>
-        max_episode_timesteps (int > 0): Maximum number of timesteps per episode
+        max_episode_timesteps (int > 0): Upper bound for numer of timesteps per episode
             (<span style="color:#00C000"><b>default</b></span>: not given, better implicitly
             specified via `environment` argument for `Agent.create(...)`).
 
@@ -61,12 +61,12 @@ class DuelingDQN(TensorforceAgent):
             (<span style="color:#00C000"><b>default</b></span>: "auto", automatically configured
             network).
 
-        memory (int): Replay memory capacity
-            (<span style="color:#00C000"><b>default</b></span>: 10000).
+        memory (int): Replay memory capacity, has to fit at least around batch_size + one episode
+            (<span style="color:#C00000"><b>required</b></span>).
         batch_size (parameter, long > 0): Number of timesteps per update batch
             (<span style="color:#00C000"><b>default</b></span>: 32 timesteps).
         update_frequency ("never" | parameter, long > 0): Frequency of updates
-            (<span style="color:#00C000"><b>default</b></span>: every 4 timesteps).
+            (<span style="color:#00C000"><b>default</b></span>: batch_size).
         start_updating (parameter, long >= batch_size): Number of timesteps before first update
             (<span style="color:#00C000"><b>default</b></span>: none).
         learning_rate (parameter, float > 0.0): Optimizer learning rate
@@ -83,8 +83,8 @@ class DuelingDQN(TensorforceAgent):
         estimate_terminal (bool): Whether to estimate the value of (real) terminal states
             (<span style="color:#00C000"><b>default</b></span>: false).
 
-        target_sync_frequency (parameter, int > 0): Timestep interval between target network
-            updates (<span style="color:#00C000"><b>default</b></span>: 10000).
+        target_sync_frequency (parameter, int > 0): Interval between target network updates
+            (<span style="color:#00C000"><b>default</b></span>: every update).
         target_update_weight (parameter, 0.0 < float <= 1.0): Target network update weight
             (<span style="color:#00C000"><b>default</b></span>: 1.0).
 
@@ -107,7 +107,7 @@ class DuelingDQN(TensorforceAgent):
             regularization, to discourage the policy distribution being too "certain" / spiked
             (<span style="color:#00C000"><b>default</b></span>: 0.0).
 
-        name (string): Agent name, used e.g. for TensorFlow scopes
+        name (string): Agent name, used e.g. for TensorFlow scopes and saver default filename
             (<span style="color:#00C000"><b>default</b></span>: "agent").
         device (string): Device name
             (<span style="color:#00C000"><b>default</b></span>: TensorFlow default).
@@ -126,7 +126,7 @@ class DuelingDQN(TensorforceAgent):
             <li><b>directory</b> (<i>path</i>) &ndash; saver directory
             (<span style="color:#C00000"><b>required</b></span>).</li>
             <li><b>filename</b> (<i>string</i>) &ndash; model filename
-            (<span style="color:#00C000"><b>default</b></span>: "agent").</li>
+            (<span style="color:#00C000"><b>default</b></span>: agent name).</li>
             <li><b>frequency</b> (<i>int > 0</i>) &ndash; how frequently in seconds to save the
             model (<span style="color:#00C000"><b>default</b></span>: 600 seconds).</li>
             <li><b>load</b> (<i>bool | str</i>) &ndash; whether to load the existing model, or
@@ -189,17 +189,19 @@ class DuelingDQN(TensorforceAgent):
     """
 
     def __init__(
+        # Required
+        self, states, actions, memory,
         # Environment
-        self, states, actions, max_episode_timesteps=None,
+        max_episode_timesteps=None,
         # Network
         network='auto',
         # Optimization
-        memory=10000, batch_size=32, update_frequency=4, start_updating=None, learning_rate=3e-4,
+        batch_size=32, update_frequency=None, start_updating=None, learning_rate=3e-4,
         huber_loss=0.0,
         # Reward estimation
         horizon=0, discount=0.99, estimate_terminal=False,  # double_q_model=False !!!!!!!!!!!!!!!!!!!!!!!!!!!!
         # Target network
-        target_sync_frequency=10000, target_update_weight=1.0,
+        target_sync_frequency=1, target_update_weight=1.0,
         # Preprocessing
         preprocessing=None,
         # Exploration
@@ -234,7 +236,9 @@ class DuelingDQN(TensorforceAgent):
         assert max_episode_timesteps is None or \
             memory >= batch_size + max_episode_timesteps + horizon
         memory = dict(type='replay', capacity=memory)
-        update = dict(unit='timesteps', batch_size=batch_size, frequency=update_frequency)
+        update = dict(unit='timesteps', batch_size=batch_size)
+        if update_frequency is not None:
+            update['frequency'] = update_frequency
         if start_updating is not None:
             update['start'] = start_updating
         optimizer = dict(type='adam', learning_rate=learning_rate)

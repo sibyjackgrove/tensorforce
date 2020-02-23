@@ -18,6 +18,18 @@ from setuptools import find_packages, setup
 import sys
 
 
+"""
+test: cd docs; make html; cd ..;
+pip install --upgrade pip setuptools wheel twine
+python setup.py sdist bdist_wheel
+twine upload --repository-url https://test.pypi.org/legacy/ dist/Tensorforce-0.5.4*
+test: pip install --upgrade --index-url https://test.pypi.org/simple/ tensorforce
+test: python; import tensorforce;
+test: python tensorforce/examples/quickstart.py
+twine upload dist/Tensorforce-0.5.4*
+"""
+
+
 if sys.version_info.major != 3:
     raise NotImplementedError("Tensorforce is only compatible with Python 3.")
 
@@ -86,20 +98,21 @@ setup(
         package for package in find_packages(exclude=('test',))
         if package.startswith('tensorforce')
     ],
-    download_url='https://github.com/tensorforce/tensorforce/archive/0.5.0.tar.gz',
+    download_url='https://github.com/tensorforce/tensorforce/archive/{}.tar.gz'.format(version),
     license='Apache 2.0',
     python_requires='>=3.5',
     install_requires=install_requires,
     extras_require=dict(
-        tf=["tensorflow==2.0"],
-        tf_gpu=["tensorflow-gpu==2.0"],
-        docs=["m2r", "recommonmark", "sphinx", "sphinx-rtd-theme"],
-        envs=["gym[all]", "gym-retro", "mazeexp", "vizdoom"],
-        mazeexp=["mazeexp"],
-        gym=["gym"],
-        gym_all=["gym[all]"],
-        retro=["gym-retro"],
-        vizdoom=["vizdoom"]
+        tf=['tensorflow==2.0.1'],
+        tf_gpu=['tensorflow-gpu==2.0.1'],
+        tfa=['tensorflow-addons'],
+        docs=['m2r', 'recommonmark', 'sphinx', 'sphinx-rtd-theme'],
+        tune=['hpbandster'],
+        envs=['gym[all]', 'gym-retro', 'mazeexp', 'vizdoom'],
+        mazeexp=['mazeexp'],
+        gym=['gym[all]'],
+        retro=['gym-retro'],
+        vizdoom=['vizdoom']
     ),
     zip_safe=False
 )

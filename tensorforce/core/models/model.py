@@ -17,6 +17,7 @@ from collections import OrderedDict
 from copy import deepcopy
 import os
 
+import h5py
 import numpy as np
 import tensorflow as tf
 
@@ -56,7 +57,38 @@ class Model(Module):
         self.seed = seed
 
         # Execution
-        assert execution is None
+        self.execution = dict() if execution is None else execution
+        if 'session_config' in self.execution:
+            session = self.execution['session_config']
+            if 'cluster_def' in session:
+                session['cluster_def'] = tf.train.ClusterDef(job=[
+                    tf.train.JobDef(name=name, tasks=[
+                        tf.train.JobDef.TasksEntry(key=key, value=value)
+                        for key, value in tasks.items()
+                    ]) for name, tasks in session['cluster_def'].items()
+                ])
+            if 'device_count' in session:
+                session['device_count'] = [
+                    tf.compat.v1.ConfigProto.DeviceCountEntry(key=value)
+                    for key, value in session['device_count'].items()
+                ]
+            if 'experimental' in session:
+                session['experimental'] = tf.compat.v1.ConfigProto.Experimental(
+                    **session['experimental']
+                )
+            if 'gpu_options' in session:
+                if 'experimental' in session['gpu_options']:
+                    session['gpu_options']['experimental'] = tf.compat.v1.GPUOptions.Experimental(
+                        **session['gpu_options']['experimental']
+                    )
+                session['gpu_options'] = tf.compat.v1.GPUOptions(**session['gpu_options'])
+            if 'graph_options' in session:
+                if 'optimizer_options' in session['graph_options']:
+                    session['graph_options']['optimizer_options'] = tf.compat.v1.OptimizerOptions(
+                        **session['graph_options']['optimizer_options']
+                    )
+                session['graph_options'] = tf.compat.v1.GraphOptions(**session['graph_options'])
+            self.execution['session_config'] = tf.compat.v1.ConfigProto(**session)
 
         # Saver
         if saver is None:
@@ -65,7 +97,10 @@ class Model(Module):
             key in ('directory', 'filename', 'frequency', 'load', 'max-checkpoints')
             for key in saver
         ):
-            raise TensorforceError.value(name='saver', value=list(saver))
+            raise TensorforceError.value(
+                name='agent', argument='saver', value=list(saver),
+                hint='not from {directory,filename,frequency,load,max-checkpoints}'
+            )
         elif saver.get('directory') is None:
             self.saver_spec = None
         else:
@@ -78,7 +113,10 @@ class Model(Module):
             key in ('directory', 'flush', 'frequency', 'labels', 'max-summaries')
             for key in summarizer
         ):
-            raise TensorforceError.value(name='summarizer', value=list(summarizer))
+            raise TensorforceError.value(
+                name='agent', argument='summarizer', value=list(summarizer),
+                hint='not from {directory,flush,frequency,labels,max-summaries}'
+            )
         elif summarizer.get('directory') is None:
             self.summarizer_spec = None
         else:
@@ -93,34 +131,34 @@ class Model(Module):
         for name in self.internals_spec:
             self.internals_init[name] = None
             if name in self.states_spec:
-                raise TensorforceError(
-                    "Name overlap between internals and states: {}.".format(name)
+                raise TensorforceError.collision(
+                    name='name', value=name, group1='states', group2='internals'
                 )
         self.actions_spec = actions
         for name in self.actions_spec:
             if name in self.states_spec:
-                raise TensorforceError(
-                    "Name overlap between actions and states: {}.".format(name)
+                raise TensorforceError.collision(
+                    name='name', value=name, group1='states', group2='actions'
                 )
             if name in self.internals_spec:
-                raise TensorforceError(
-                    "Name overlap between actions and internals: {}.".format(name)
+                raise TensorforceError.collision(
+                    name='name', value=name, group1='actions', group2='internals'
                 )
         self.auxiliaries_spec = OrderedDict()
         for name, spec in self.actions_spec.items():
             if spec['type'] == 'int':
                 name = name + '_mask'
                 if name in self.states_spec:
-                    raise TensorforceError(
-                        "Name overlap between action-masks and states: {}.".format(name)
+                    raise TensorforceError.collision(
+                        name='name', value=name, group1='states', group2='action-masks'
                     )
                 if name in self.internals_spec:
-                    raise TensorforceError(
-                        "Name overlap between action-masks and internals: {}.".format(name)
+                    raise TensorforceError.collision(
+                        name='name', value=name, group1='internals', group2='action-masks'
                     )
                 if name in self.actions_spec:
-                    raise TensorforceError(
-                        "Name overlap between action-masks and actions: {}.".format(name)
+                    raise TensorforceError.collision(
+                        name='name', value=name, group1='actions', group2='action-masks'
                     )
                 self.auxiliaries_spec[name] = dict(
                     type='bool', shape=(spec['shape'] + (spec['num_values'],))
@@ -158,7 +196,10 @@ class Model(Module):
                 layers=preprocessing['reward']
             )
             if self.preprocessing['reward'].get_output_spec() != reward_spec:
-                raise TensorforceError.unexpected()
+                raise TensorforceError.mismatch(
+                    name='preprocessing', argument='reward output spec',
+                    value1=self.preprocessing['reward'].get_output_spec(), value2=reward_spec
+                )
 
         # Exploration
         exploration = 0.0 if exploration is None else exploration
@@ -187,15 +228,6 @@ class Model(Module):
             is_trainable=False, dtype='float'
         )
 
-        # Execution
-        self.execution_spec = None
-        if self.execution_spec is not None:
-            self.execution_type = self.execution_spec['type']
-            self.session_config = self.execution_spec['session_config']
-            self.distributed_spec = self.execution_spec['distributed_spec']
-        # One record is inserted into these buffers when act(independent=False) method is called.
-        # self.num_parallel = self.execution_spec.get('num_parallel', 1)
-
         # Register global tensors
         for name, spec in self.states_spec.items():
             Module.register_tensor(name=name, spec=spec, batched=True)
@@ -205,12 +237,9 @@ class Model(Module):
             Module.register_tensor(name=name, spec=spec, batched=True)
         Module.register_tensor(name='terminal', spec=dict(type='long', shape=()), batched=True)
         Module.register_tensor(name='reward', spec=dict(type='float', shape=()), batched=True)
-        Module.register_tensor(
-            name='deterministic', spec=dict(type='bool', shape=()), batched=False
-        )
         Module.register_tensor(name='independent', spec=dict(type='bool', shape=()), batched=False)
         Module.register_tensor(
-            name='optimization', spec=dict(type='bool', shape=()), batched=False
+            name='deterministic', spec=dict(type='bool', shape=()), batched=False
         )
         Module.register_tensor(name='timestep', spec=dict(type='long', shape=()), batched=False)
         Module.register_tensor(name='episode', spec=dict(type='long', shape=()), batched=False)
@@ -221,13 +250,15 @@ class Model(Module):
         Sets up the TensorFlow model graph, starts the servers (distributed mode), creates summarizers
         and savers, initializes (and enters) the TensorFlow session.
         """
+        tf.compat.v1.reset_default_graph()
 
         # Create/get our graph, setup local model/global model links, set scope and device.
         graph_default_context = self.setup_graph()
 
         # Start a tf Server (in case of distributed setup). Only start once.
         # if self.execution_type == "distributed" and self.server is None and self.is_local_model:
-        if self.execution_spec is None or self.execution_type == 'local' or not self.is_local_model:
+        # if self.execution_spec is None or self.execution_type == 'local' or not self.is_local_model:
+        if True:
             self.server = None
         else:
             # Creates and stores a tf server (and optionally joins it if we are a parameter-server).
@@ -249,12 +280,13 @@ class Model(Module):
 
         # If we are a global model -> return here.
         # Saving, syncing, finalizing graph, session is done by local replica model.
-        if self.execution_spec is not None and self.execution_type == "distributed" and not self.is_local_model:
-            return
+        # if self.execution_spec is not None and self.execution_type == "distributed" and not self.is_local_model:
+        #     return
 
         # Saver/Summary -> Scaffold.
         # Creates the tf.compat.v1.train.Saver object and stores it in self.saver.
-        if self.execution_spec is None or self.execution_type == "single":
+        # if self.execution_spec is None or self.execution_type == "single":
+        if True:
             saved_variables = self.get_variables(only_saved=True)
         else:
             saved_variables = self.global_model.get_variables(only_saved=True)
@@ -299,7 +331,10 @@ class Model(Module):
         self.setup_session(self.server, hooks, graph_default_context)
 
         if self.saver_directory is not None:
-            self.save()
+            self.save(
+                directory=self.saver_directory, filename=self.saver_filename, format='tensorflow',
+                append='timesteps'
+            )
 
     def setup_graph(self):
         """
@@ -313,7 +348,8 @@ class Model(Module):
         graph_default_context = None
 
         # Single (non-distributed) mode.
-        if self.execution_spec is None or self.execution_type == 'single':
+        # if self.execution_spec is None or self.execution_type == 'single':
+        if True:
             self.graph = tf.Graph()
             graph_default_context = self.graph.as_default()
             graph_default_context.__enter__()
@@ -375,7 +411,8 @@ class Model(Module):
         Creates the tf.compat.v1.train.Scaffold object and assigns it to self.scaffold.
         Other fields of the Scaffold are generated automatically.
         """
-        if self.execution_spec is None or self.execution_type == "single":
+        # if self.execution_spec is None or self.execution_type == "single":
+        if True:
             global_variables = self.get_variables()
             # global_variables += [self.global_episode, self.global_timestep]
             init_op = tf.compat.v1.variables_initializer(var_list=global_variables)
@@ -466,7 +503,7 @@ class Model(Module):
         # Checkpoint saver hook
         if self.saver_spec is not None:  # and (self.execution_type == 'single' or self.distributed_spec['task_index'] == 0):
             self.saver_directory = self.saver_spec['directory']
-            self.saver_filename = self.saver_spec.get('filename', 'agent')
+            self.saver_filename = self.saver_spec.get('filename', self.name)
             frequency = self.saver_spec.get('frequency', 600)
             if frequency is not None:
                 hooks.append(tf.compat.v1.train.CheckpointSaverHook(
@@ -476,7 +513,7 @@ class Model(Module):
                 ))
         else:
             self.saver_directory = None
-            self.saver_filename = 'agent'
+            self.saver_filename = self.name
 
         # Stop at step hook
         # hooks.append(tf.compat.v1.train.StopAtStepHook(
@@ -510,13 +547,14 @@ class Model(Module):
             hooks (list): A list of (saver, summary, etc..) hooks to be passed to the session.
             graph_default_context: The graph as_default() context that we are currently in.
         """
-        if self.execution_spec is not None and self.execution_type == "distributed":
+        # if self.execution_spec is not None and self.execution_type == "distributed":
+        if False:
             # if self.distributed_spec['task_index'] == 0:
             # TensorFlow chief session creator object
             session_creator = tf.compat.v1.train.ChiefSessionCreator(
                 scaffold=self.scaffold,
                 master=server.target,
-                config=self.session_config,
+                config=self.execution.get('session_config'),
                 checkpoint_dir=None,
                 checkpoint_filename_with_path=None
             )
@@ -543,7 +581,7 @@ class Model(Module):
                 hooks=hooks,
                 scaffold=self.scaffold,
                 master='',  # Default value.
-                config=(None if self.execution_spec is None else self.session_config),  # self.execution_spec.get('session_config'),
+                config=self.execution.get('session_config'),
                 checkpoint_dir=None
             )
 
@@ -559,8 +597,12 @@ class Model(Module):
         if self.summarizer_spec is not None:
             self.monitored_session.run(fetches=self.summarizer_close)
         if self.saver_directory is not None:
-            self.save()
+            self.save(
+                directory=self.saver_directory, filename=self.saver_filename, format='tensorflow',
+                append='timesteps'
+            )
         self.monitored_session.__exit__(None, None, None)
+        tf.compat.v1.reset_default_graph()
 
     def tf_initialize(self):
         super().tf_initialize()
@@ -573,6 +615,13 @@ class Model(Module):
                 shape=self.unprocessed_state_shape.get(name, state_spec['shape']), batched=True
             )
 
+        # Internals
+        self.internals_input = OrderedDict()
+        for name, internal_spec in self.internals_spec.items():
+            self.internals_input[name] = self.add_placeholder(
+                name=name, dtype=internal_spec['type'], shape=internal_spec['shape'], batched=True
+            )
+
         # Auxiliaries
         self.auxiliaries_input = OrderedDict()
         # Categorical action masks
@@ -580,9 +629,23 @@ class Model(Module):
             if action_spec['type'] == 'int':
                 name = name + '_mask'
                 shape = action_spec['shape'] + (action_spec['num_values'],)
-                default = tf.constant(
-                    value=True, dtype=util.tf_dtype(dtype='bool'), shape=((1,) + shape)
+                # default = tf.constant(
+                #     value=True, dtype=util.tf_dtype(dtype='bool'), shape=((1,) + shape)
+                # )
+                shape = tf.concat(
+                    values=(
+                        tf.shape(
+                            input=next(iter(self.states_input.values())),
+                            out_type=util.tf_dtype(dtype='long')
+                        )[:1],
+                        tf.constant(
+                            value=(action_spec['shape'] + (action_spec['num_values'],)),
+                            dtype=util.tf_dtype(dtype='long')
+                        )
+                    ), axis=0
                 )
+                default = tf.ones(shape=shape, dtype=util.tf_dtype(dtype='bool'))
+                shape = action_spec['shape'] + (action_spec['num_values'],)
                 self.auxiliaries_input[name] = self.add_placeholder(
                     name=name, dtype='bool', shape=shape, batched=True, default=default
                 )
@@ -600,12 +663,6 @@ class Model(Module):
         # Deterministic flag
         self.deterministic_input = self.add_placeholder(
             name='deterministic', dtype='bool', shape=(), batched=False,
-            default=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
-        )
-
-        # Independent flag
-        self.independent_input = self.add_placeholder(
-            name='independent', dtype='bool', shape=(), batched=False,
             default=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
         )
 
@@ -698,86 +755,97 @@ class Model(Module):
 
         return timestep, episode, update
 
-    def api_act(self):
+    def api_independent_act(self):
         # Inputs
-        states = self.states_input
-        auxiliaries = self.auxiliaries_input
-        parallel = self.parallel_input
+        states = OrderedDict(self.states_input)
+        internals = OrderedDict(self.internals_input)
+        auxiliaries = OrderedDict(self.auxiliaries_input)
         deterministic = self.deterministic_input
-        independent = self.independent_input
 
         true = tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
         zero_float = tf.constant(value=0.0, dtype=util.tf_dtype(dtype='float'))
+
+        batch_size = tf.shape(
+            input=next(iter(states.values())), out_type=util.tf_dtype(dtype='long')
+        )[:1]
 
         # Assertions
         assertions = list()
         # states: type and shape
         for name, spec in self.states_spec.items():
+            tf.debugging.assert_type(
+                tensor=states[name], tf_type=util.tf_dtype(dtype=spec['type']),
+                message="Agent.act: invalid type for {} state input.".format(name)
+            )
+            shape = tf.constant(
+                value=self.unprocessed_state_shape.get(name, spec['shape']),
+                dtype=util.tf_dtype(dtype='long')
+            )
             assertions.append(
-                tf.compat.v1.debugging.assert_type(
-                    tensor=states[name], tf_type=util.tf_dtype(dtype=spec['type'])
+                tf.debugging.assert_equal(
+                    x=tf.shape(input=states[name], out_type=util.tf_dtype(dtype='long')),
+                    y=tf.concat(values=(batch_size, shape), axis=0),
+                    message="Agent.act: invalid shape for {} state input.".format(name)
                 )
             )
-            shape = (1,) + self.unprocessed_state_shape.get(name, spec['shape'])
+        # internals: type and shape
+        for name, spec in self.internals_spec.items():
+            tf.debugging.assert_type(
+                tensor=internals[name], tf_type=util.tf_dtype(dtype=spec['type']),
+                message="Agent.act: invalid type for {} internal input.".format(name)
+            )
+            shape = tf.constant(value=spec['shape'], dtype=util.tf_dtype(dtype='long'))
             assertions.append(
-                tf.compat.v1.debugging.assert_equal(
-                    x=tf.shape(input=states[name], out_type=tf.int32),
-                    y=tf.constant(value=shape, dtype=tf.int32)
+                tf.debugging.assert_equal(
+                    x=tf.shape(input=internals[name], out_type=util.tf_dtype(dtype='long')),
+                    y=tf.concat(values=(batch_size, shape), axis=0),
+                    message="Agent.act: invalid shape for {} internal input.".format(name)
                 )
             )
         # action_masks: type and shape
         for name, spec in self.actions_spec.items():
             if spec['type'] == 'int':
                 name = name + '_mask'
-                assertions.append(
-                    tf.compat.v1.debugging.assert_type(
-                        tensor=auxiliaries[name], tf_type=util.tf_dtype(dtype='bool')
-                    )
+                tf.debugging.assert_type(
+                    tensor=auxiliaries[name], tf_type=util.tf_dtype(dtype='bool'),
+                    message="Agent.act: invalid type for {} action-mask input.".format(name)
                 )
-                shape = (1,) + spec['shape'] + (spec['num_values'],)
-                assertions.append(
-                    tf.compat.v1.debugging.assert_equal(
-                        x=tf.shape(input=auxiliaries[name], out_type=tf.int32),
-                        y=tf.constant(value=shape, dtype=tf.int32)
-                    )
+                shape = tf.constant(
+                    value=(spec['shape'] + (spec['num_values'],)),
+                    dtype=util.tf_dtype(dtype='long')
                 )
                 assertions.append(
-                    tf.compat.v1.debugging.assert_equal(
+                    tf.debugging.assert_equal(
+                        x=tf.shape(input=auxiliaries[name], out_type=util.tf_dtype(dtype='long')),
+                        y=tf.concat(values=(batch_size, shape), axis=0),
+                        message="Agent.act: invalid shape for {} action-mask input.".format(name)
+                    )
+                )
+                assertions.append(
+                    tf.debugging.assert_equal(
                         x=tf.reduce_all(
                             input_tensor=tf.reduce_any(
-                                input_tensor=auxiliaries[name], axis=tuple(range(1, len(shape)))
-                            ), axis=0
-                        ), y=true
+                                input_tensor=auxiliaries[name], axis=(len(spec['shape']) + 1)
+                            ), axis=tuple(range(len(spec['shape']) + 1))
+                        ),
+                        y=true, message="Agent.act: at least one action has to be valid for {} "
+                                        "action-mask input.".format(name)
                     )
                 )
-        # parallel: type, shape and value
-        assertions.append(tf.compat.v1.debugging.assert_type(
-            tensor=parallel, tf_type=util.tf_dtype(dtype='long')
-        ))
-        assertions.append(tf.compat.v1.debugging.assert_scalar(tensor=parallel[0]))
-        assertions.append(tf.compat.v1.debugging.assert_non_negative(x=parallel))
-        assertions.append(
-            tf.compat.v1.debugging.assert_less(
-                x=parallel[0],
-                y=tf.constant(value=self.parallel_interactions, dtype=util.tf_dtype(dtype='long'))
-            )
-        )
         # deterministic: type and shape
-        assertions.append(tf.compat.v1.debugging.assert_type(
-            tensor=deterministic, tf_type=util.tf_dtype(dtype='bool')
-        ))
-        assertions.append(tf.compat.v1.debugging.assert_scalar(tensor=deterministic))
-        # independent: type and shape
-        assertions.append(tf.compat.v1.debugging.assert_type(
-            tensor=independent, tf_type=util.tf_dtype(dtype='bool')
-        ))
-        assertions.append(tf.compat.v1.debugging.assert_scalar(tensor=independent))
+        tf.debugging.assert_type(
+            tensor=deterministic, tf_type=util.tf_dtype(dtype='bool'),
+            message="Agent.act: invalid type for deterministic input."
+        )
+        tf.debugging.assert_scalar(
+            tensor=deterministic, message="Agent.act: deterministic input has to be a scalar."
+        )
 
         # Set global tensors
         Module.update_tensors(
-            deterministic=deterministic, independent=independent,
-            optimization=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
-            timestep=self.global_timestep, episode=self.global_episode, update=self.global_update
+            independent=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
+            deterministic=deterministic, timestep=self.global_timestep, episode=self.global_episode,
+            update=self.global_update
         )
 
         one = tf.constant(value=1, dtype=util.tf_dtype(dtype='long'))
@@ -833,45 +901,6 @@ class Model(Module):
                 )
                 dependencies = variable_noise_tensors
 
-        # Initialize or retrieve internals
-        if len(self.internals_spec) > 0:
-            with tf.control_dependencies(control_inputs=dependencies):
-                # buffer_index = self.buffer_index[parallel]
-
-                # def initialize_internals():
-                #     internals = OrderedDict()
-                #     for name, init in self.internals_init.items():
-                #         internals[name] = tf.expand_dims(input=init, axis=0)
-                #     return internals
-
-                # def retrieve_internals():
-                #     internals = OrderedDict()
-                #     for name in self.internals_spec:
-                #         internals[name] = tf.gather_nd(
-                #             params=self.internals_buffer[name],
-                #             indices=[(parallel, buffer_index)]
-                #         )
-                #     return internals
-
-                # zero = tf.constant(value=0, dtype=util.tf_dtype(dtype='long'))
-                # initialize = tf.math.equal(x=buffer_index, y=zero)
-                # internals = self.cond(
-                #     pred=initialize, true_fn=initialize_internals, false_fn=retrieve_internals
-                # )
-                # retrieved_internals = util.flatten(xs=internals)
-                # dependencies = retrieved_internals
-
-                buffer_index = tf.gather(params=self.buffer_index, indices=parallel)
-                indices = tf.stack(values=(parallel, buffer_index), axis=1)
-                internals = OrderedDict()
-                for name in self.internals_spec:
-                    internals[name] = tf.gather_nd(
-                        params=self.internals_buffer[name], indices=indices
-                    )
-                dependencies = util.flatten(xs=internals)
-        else:
-            internals = OrderedDict()
-
         # Core act: retrieve actions and internals
         with tf.control_dependencies(control_inputs=dependencies):
             actions, internals = self.core_act(
@@ -884,13 +913,14 @@ class Model(Module):
         assertions = list()
         for name, spec in self.actions_spec.items():
             if spec['type'] == 'int':
-                indices = tf.dtypes.cast(x=actions[name], dtype=tf.int64)
+                indices = tf.dtypes.cast(x=actions[name], dtype=util.tf_dtype(dtype='long'))
                 indices = tf.expand_dims(input=indices, axis=-1)
                 is_unmasked = tf.gather(
                     params=auxiliaries[name + '_mask'], indices=indices, batch_dims=-1
                 )
-                assertions.append(tf.compat.v1.debugging.assert_equal(
-                    x=tf.math.reduce_all(input_tensor=is_unmasked), y=true
+                assertions.append(tf.debugging.assert_equal(
+                    x=tf.math.reduce_all(input_tensor=is_unmasked), y=true,
+                    message="Action mask check."
                 ))
         dependencies += assertions
 
@@ -933,18 +963,20 @@ class Model(Module):
                         choices = np.tile(A=[choices], reps=choices_tile)
                         choices_shape = ((1,) + spec['shape'] + (spec['num_values'],))
                         choices = tf.constant(value=choices, dtype=int_dtype, shape=choices_shape)
-                        ones = tf.ones(shape=(len(spec['shape']) + 1,), dtype=tf.int64)
-                        batch_size = tf.dtypes.cast(x=shape[0:1], dtype=tf.int64)
+                        ones = tf.ones(shape=(len(spec['shape']) + 1,), dtype=tf.dtypes.int32)
+                        batch_size = tf.dtypes.cast(x=shape[0:1], dtype=tf.dtypes.int32)
                         multiples = tf.concat(values=(batch_size, ones), axis=0)
                         choices = tf.tile(input=choices, multiples=multiples)
 
                         # Random unmasked action
                         mask = auxiliaries[name + '_mask']
-                        num_values = tf.math.count_nonzero(input=mask, axis=-1, dtype=tf.int64)
+                        num_values = tf.math.count_nonzero(
+                            input=mask, axis=-1, dtype=tf.dtypes.int32
+                        )
                         random_action = tf.random.uniform(shape=shape, dtype=float_dtype)
                         random_action = tf.dtypes.cast(
                             x=(random_action * tf.dtypes.cast(x=num_values, dtype=float_dtype)),
-                            dtype=tf.int64
+                            dtype=tf.dtypes.int32
                         )
 
                         # Correct for masked actions
@@ -997,69 +1029,308 @@ class Model(Module):
                 )
                 dependencies = (reversed_variable_noise,)
 
+        # Return values
+        with tf.control_dependencies(control_inputs=dependencies):
+            # Function-level identity operation for retrieval (plus enforce dependency)
+            for name, spec in self.actions_spec.items():
+                actions[name] = util.identity_operation(
+                    x=actions[name], operation_name=(name + '-output')
+                )
+            for name, spec in self.internals_spec.items():
+                internals[name] = util.identity_operation(
+                    x=internals[name], operation_name=(name + '-output')
+                )
+
+        return actions, internals
+
+    def api_act(self):
+        # Inputs
+        states = OrderedDict(self.states_input)
+        auxiliaries = OrderedDict(self.auxiliaries_input)
+        parallel = self.parallel_input
+
+        true = tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
+        zero_float = tf.constant(value=0.0, dtype=util.tf_dtype(dtype='float'))
+
+        parallel_shape = tf.shape(input=parallel, out_type=util.tf_dtype(dtype='long'))
+
+        # Assertions
+        assertions = list()
+        # states: type and shape
+        for name, spec in self.states_spec.items():
+            tf.debugging.assert_type(
+                tensor=states[name], tf_type=util.tf_dtype(dtype=spec['type']),
+                message="Agent.act: invalid type for {} state input.".format(name)
+            )
+            shape = tf.constant(
+                value=self.unprocessed_state_shape.get(name, spec['shape']),
+                dtype=util.tf_dtype(dtype='long')
+            )
+            assertions.append(
+                tf.debugging.assert_equal(
+                    x=tf.shape(input=states[name], out_type=util.tf_dtype(dtype='long')),
+                    y=tf.concat(values=(parallel_shape, shape), axis=0),
+                    message="Agent.act: invalid shape for {} state input.".format(name)
+                )
+            )
+        # action_masks: type and shape
+        for name, spec in self.actions_spec.items():
+            if spec['type'] == 'int':
+                name = name + '_mask'
+                tf.debugging.assert_type(
+                    tensor=auxiliaries[name], tf_type=util.tf_dtype(dtype='bool'),
+                    message="Agent.act: invalid type for {} action-mask input.".format(name)
+                )
+                shape = tf.constant(
+                    value=(spec['shape'] + (spec['num_values'],)),
+                    dtype=util.tf_dtype(dtype='long')
+                )
+                assertions.append(
+                    tf.debugging.assert_equal(
+                        x=tf.shape(input=auxiliaries[name], out_type=util.tf_dtype(dtype='long')),
+                        y=tf.concat(values=(parallel_shape, shape), axis=0),
+                        message="Agent.act: invalid shape for {} action-mask input.".format(name)
+                    )
+                )
+                assertions.append(
+                    tf.debugging.assert_equal(
+                        x=tf.reduce_all(
+                            input_tensor=tf.reduce_any(
+                                input_tensor=auxiliaries[name], axis=(len(spec['shape']) + 1)
+                            ), axis=tuple(range(len(spec['shape']) + 1))
+                        ),
+                        y=true, message="Agent.act: at least one action has to be valid for {} "
+                                        "action-mask input.".format(name)
+                    )
+                )
+        # parallel: type, shape and value
+        tf.debugging.assert_type(
+            tensor=parallel, tf_type=util.tf_dtype(dtype='long'),
+            message="Agent.act: invalid type for parallel input."
+        )
+        assertions.append(tf.debugging.assert_rank(
+            x=parallel, rank=1, message="Agent.act: invalid shape for parallel input."
+        ))
+        assertions.append(tf.debugging.assert_non_negative(
+            x=parallel, message="Agent.act: parallel input has to be non-negative."
+        ))
+        assertions.append(
+            tf.debugging.assert_less(
+                x=parallel,
+                y=tf.constant(value=self.parallel_interactions, dtype=util.tf_dtype(dtype='long')),
+                message="Agent.act: parallel input has to be less than parallel_interactions."
+            )
+        )
+
+        # Set global tensors
+        Module.update_tensors(
+            independent=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
+            deterministic=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
+            timestep=self.global_timestep, episode=self.global_episode, update=self.global_update
+        )
+
+        one = tf.constant(value=1, dtype=util.tf_dtype(dtype='long'))
+
+        dependencies = assertions
+
+        # Preprocessing states
+        if any(name in self.preprocessing for name in self.states_spec):
+            with tf.control_dependencies(control_inputs=dependencies):
+                for name in self.states_spec:
+                    if name in self.preprocessing:
+                        states[name] = self.preprocessing[name].apply(x=states[name])
+            dependencies = util.flatten(xs=states)
+
+        # Variable noise
+        variables = self.get_variables(only_trainable=True)
+        if len(variables) > 0:
+            with tf.control_dependencies(control_inputs=dependencies):
+                dependencies = list()
+                variable_noise_tensors = list()
+                variable_noise = self.variable_noise.value()
+                for variable in variables:
+                    if variable.dtype == util.tf_dtype(dtype='float'):
+                        noise = tf.random.normal(
+                            shape=util.shape(variable), mean=0.0, stddev=variable_noise,
+                            dtype=util.tf_dtype(dtype='float')
+                        )
+                    else:
+                        noise = tf.random.normal(
+                            shape=util.shape(variable), mean=0.0,
+                            stddev=tf.dtypes.cast(x=variable_noise, dtype=variable.dtype),
+                            dtype=variable.dtype
+                        )
+                    variable_noise_tensors.append(noise)
+                    dependencies.append(variable.assign_add(delta=noise, read_value=False))
+
+        # Initialize or retrieve internals
+        internals = OrderedDict()
+        if len(self.internals_spec) > 0:
+            with tf.control_dependencies(control_inputs=dependencies):
+                for name, spec in self.internals_spec.items():
+                    buffer_index = tf.gather(params=self.buffer_index, indices=parallel)
+                    indices = tf.stack(values=(parallel, buffer_index), axis=1)
+                    internals[name] = tf.gather_nd(
+                        params=self.internals_buffer[name], indices=indices
+                    )
+
+                dependencies = util.flatten(xs=internals)
+
+        # Core act: retrieve actions and internals
+        with tf.control_dependencies(control_inputs=dependencies):
+            actions, internals = self.core_act(
+                states=states, internals=internals, auxiliaries=auxiliaries
+            )
+            dependencies = util.flatten(xs=actions) + util.flatten(xs=internals)
+
+        # Check action masks
+        # TODO: also check float bounds, move after exploration?
+        assertions = list()
+        for name, spec in self.actions_spec.items():
+            if spec['type'] == 'int':
+                indices = tf.dtypes.cast(x=actions[name], dtype=util.tf_dtype(dtype='long'))
+                indices = tf.expand_dims(input=indices, axis=-1)
+                is_unmasked = tf.gather(
+                    params=auxiliaries[name + '_mask'], indices=indices, batch_dims=-1
+                )
+                assertions.append(tf.debugging.assert_equal(
+                    x=tf.math.reduce_all(input_tensor=is_unmasked), y=true,
+                    message="Action mask check."
+                ))
+        dependencies += assertions
+
+        # Exploration
+        with tf.control_dependencies(control_inputs=dependencies):
+            if not isinstance(self.exploration, dict):
+                exploration = self.exploration.value()
+
+            for name, spec in self.actions_spec.items():
+                if isinstance(self.exploration, dict):
+                    if name in self.exploration:
+                        exploration = self.exploration[name].value()
+                    else:
+                        continue
+
+                float_dtype = util.tf_dtype(dtype='float')
+                shape = tf.shape(input=actions[name])
+
+                if spec['type'] == 'bool':
+                    condition = tf.random.uniform(shape=shape, dtype=float_dtype) < exploration
+                    half = tf.constant(value=0.5, dtype=float_dtype)
+                    random_action = tf.random.uniform(shape=shape, dtype=float_dtype) < half
+                    actions[name] = tf.where(condition=condition, x=random_action, y=actions[name])
+
+                elif spec['type'] == 'int':
+                    int_dtype = util.tf_dtype(dtype='int')
+
+                    # (Same code as for RandomModel)
+                    shape = tf.shape(input=actions[name])
+
+                    # Action choices
+                    choices = list(range(spec['num_values']))
+                    choices_tile = ((1,) + spec['shape'] + (1,))
+                    choices = np.tile(A=[choices], reps=choices_tile)
+                    choices_shape = ((1,) + spec['shape'] + (spec['num_values'],))
+                    choices = tf.constant(value=choices, dtype=int_dtype, shape=choices_shape)
+                    ones = tf.ones(shape=(len(spec['shape']) + 1,), dtype=tf.dtypes.int32)
+                    batch_size = tf.dtypes.cast(x=shape[0:1], dtype=tf.dtypes.int32)
+                    multiples = tf.concat(values=(batch_size, ones), axis=0)
+                    choices = tf.tile(input=choices, multiples=multiples)
+
+                    # Random unmasked action
+                    mask = auxiliaries[name + '_mask']
+                    num_values = tf.math.count_nonzero(
+                        input=mask, axis=-1, dtype=tf.dtypes.int32
+                    )
+                    random_action = tf.random.uniform(shape=shape, dtype=float_dtype)
+                    random_action = tf.dtypes.cast(
+                        x=(random_action * tf.dtypes.cast(x=num_values, dtype=float_dtype)),
+                        dtype=tf.dtypes.int32
+                    )
+
+                    # Correct for masked actions
+                    choices = tf.boolean_mask(tensor=choices, mask=mask)
+                    offset = tf.math.cumsum(x=num_values, axis=-1, exclusive=True)
+                    random_action = tf.gather(params=choices, indices=(random_action + offset))
+
+                    # Random action
+                    condition = tf.random.uniform(shape=shape, dtype=float_dtype) < exploration
+                    actions[name] = tf.where(condition=condition, x=random_action, y=actions[name])
+
+                elif spec['type'] == 'float':
+                    if 'min_value' in spec:
+                        noise = tf.random.normal(shape=shape, dtype=float_dtype) * exploration
+                        actions[name] = tf.clip_by_value(
+                            t=(actions[name] + noise), clip_value_min=spec['min_value'],
+                            clip_value_max=spec['max_value']
+                        )
+
+                    else:
+                        noise = tf.random.normal(shape=shape, dtype=float_dtype) * exploration
+                        actions[name] = actions[name] + noise
+
+            dependencies = util.flatten(xs=actions)
+
+        # Variable noise
+        if len(variables) > 0:
+            with tf.control_dependencies(control_inputs=dependencies):
+                dependencies = list()
+                for variable, noise in zip(variables, variable_noise_tensors):
+                    dependencies.append(variable.assign_sub(delta=noise, read_value=False))
+
         # Update states/internals/actions buffers
         with tf.control_dependencies(control_inputs=dependencies):
+            operations = list()
+            buffer_index = tf.gather(params=self.buffer_index, indices=parallel)
+            indices = tf.stack(values=(parallel, buffer_index), axis=1)
+            for name in self.states_spec:
+                operations.append(
+                    self.states_buffer[name].scatter_nd_update(
+                        indices=indices, updates=states[name]
+                    )
+                )
+            for name in self.auxiliaries_spec:
+                operations.append(
+                    self.auxiliaries_buffer[name].scatter_nd_update(
+                        indices=indices, updates=auxiliaries[name]
+                    )
+                )
+            for name in self.actions_spec:
+                operations.append(
+                    self.actions_buffer[name].scatter_nd_update(
+                        indices=indices, updates=actions[name]
+                    )
+                )
+            indices = tf.stack(values=(parallel, buffer_index + one), axis=1)
+            for name in self.internals_spec:
+                operations.append(
+                    self.internals_buffer[name].scatter_nd_update(
+                        indices=indices, updates=internals[name]
+                    )
+                )
 
-            def update_buffers():
-                operations = list()
-                buffer_index = tf.gather(params=self.buffer_index, indices=parallel)
-                indices = tf.stack(values=(parallel, buffer_index), axis=1)
-                for name in self.states_spec:
-                    operations.append(
-                        self.states_buffer[name].scatter_nd_update(
-                            indices=indices, updates=states[name]
-                        )
-                    )
-                for name in self.auxiliaries_spec:
-                    operations.append(
-                        self.auxiliaries_buffer[name].scatter_nd_update(
-                            indices=indices, updates=auxiliaries[name]
-                        )
-                    )
-                for name in self.actions_spec:
-                    operations.append(
-                        self.actions_buffer[name].scatter_nd_update(
-                            indices=indices, updates=actions[name]
-                        )
-                    )
-                indices = tf.stack(values=(parallel, buffer_index + one), axis=1)
-                for name in self.internals_spec:
-                    operations.append(
-                        self.internals_buffer[name].scatter_nd_update(
-                            indices=indices, updates=internals[name]
-                        )
-                    )
-
-                # Increment buffer index
-                with tf.control_dependencies(control_inputs=operations):
-                    incremented_buffer_index = self.buffer_index.scatter_nd_add(
-                        indices=[parallel], updates=[one]
-                    )
-
-                with tf.control_dependencies(control_inputs=(incremented_buffer_index,)):
-                    return util.no_operation()
-
-            updated_buffers = self.cond(
-                pred=independent, true_fn=util.no_operation, false_fn=update_buffers
-            )
+            # Increment buffer index
+            with tf.control_dependencies(control_inputs=operations):
+                incremented_buffer_index = self.buffer_index.scatter_nd_add(
+                    indices=tf.expand_dims(input=parallel, axis=1),
+                    updates=tf.fill(dims=parallel_shape, value=one)
+                )
 
         # Increment timestep
-        def increment_timestep():
+        with tf.control_dependencies(control_inputs=(incremented_buffer_index,)):
             assignments = list()
             assignments.append(
-                self.timestep.scatter_nd_add(indices=[parallel], updates=[one])
+                self.timestep.scatter_nd_add(
+                    indices=tf.expand_dims(input=parallel, axis=1),
+                    updates=tf.fill(dims=parallel_shape, value=one)
+                )
             )
-            assignments.append(self.global_timestep.assign_add(delta=one, read_value=False))
-            with tf.control_dependencies(control_inputs=assignments):
-                return util.no_operation()
-
-        with tf.control_dependencies(control_inputs=(updated_buffers,)):
-            incremented_timestep = self.cond(
-                pred=independent, true_fn=util.no_operation, false_fn=increment_timestep
-            )
+            assignments.append(self.global_timestep.assign_add(
+                delta=parallel_shape[0], read_value=False
+            ))
 
         # Return timestep
-        with tf.control_dependencies(control_inputs=(incremented_timestep,)):
+        with tf.control_dependencies(control_inputs=assignments):
             # Function-level identity operation for retrieval (plus enforce dependency)
             for name, spec in self.actions_spec.items():
                 actions[name] = util.identity_operation(
@@ -1082,53 +1353,68 @@ class Model(Module):
         buffer_index = tf.gather(params=self.buffer_index, indices=parallel)
 
         # Assertions
-        assertions = [
-            # terminal: type and shape
-            tf.compat.v1.debugging.assert_type(
-                tensor=terminal, tf_type=util.tf_dtype(dtype='long')
-            ),
-            tf.compat.v1.debugging.assert_rank(x=terminal, rank=1),
-            # reward: type and shape
-            tf.compat.v1.debugging.assert_type(
-                tensor=reward, tf_type=util.tf_dtype(dtype='float')
-            ),
-            tf.compat.v1.debugging.assert_rank(x=reward, rank=1),
-            # parallel: type, shape and value
-            tf.compat.v1.debugging.assert_type(
-                tensor=parallel, tf_type=util.tf_dtype(dtype='long')
-            ),
-            tf.compat.v1.debugging.assert_scalar(tensor=parallel[0]),
-            tf.compat.v1.debugging.assert_non_negative(x=parallel),
-            tf.compat.v1.debugging.assert_less(
-                x=parallel[0],
-                y=tf.constant(value=self.parallel_interactions, dtype=util.tf_dtype(dtype='long'))
-            ),
-            # shape of terminal equals shape of reward
-            tf.compat.v1.debugging.assert_equal(
-                x=tf.shape(input=terminal), y=tf.shape(input=reward)
-            ),
-            # size of terminal equals buffer index
-            tf.compat.v1.debugging.assert_equal(
-                x=tf.shape(input=terminal, out_type=tf.int64)[0],
-                y=tf.dtypes.cast(x=buffer_index, dtype=tf.int64)
-            ),
-            # at most one terminal
-            tf.compat.v1.debugging.assert_less_equal(
-                x=tf.math.count_nonzero(input=terminal, dtype=util.tf_dtype(dtype='long')),
-                y=tf.constant(value=1, dtype=util.tf_dtype(dtype='long'))
-            ),
-            # if terminal, last timestep in batch
-            tf.compat.v1.debugging.assert_equal(
-                x=tf.math.reduce_any(input_tensor=tf.math.greater(x=terminal, y=zero)),
-                y=tf.math.greater(x=terminal[-1], y=zero)
-            )
-        ]
+        assertions = list()
+        # terminal: type and shape
+        tf.debugging.assert_type(
+            tensor=terminal, tf_type=util.tf_dtype(dtype='long'),
+            message="Agent.observe: invalid type for terminal input."
+        )
+        assertions.append(tf.debugging.assert_rank(
+            x=terminal, rank=1, message="Agent.observe: invalid shape for terminal input."
+        ))
+        # reward: type and shape
+        tf.debugging.assert_type(
+            tensor=reward, tf_type=util.tf_dtype(dtype='float'),
+            message="Agent.observe: invalid type for reward input."
+        )
+        assertions.append(tf.debugging.assert_rank(
+            x=reward, rank=1, message="Agent.observe: invalid shape for reward input."
+        ))
+        # parallel: type, shape and value
+        tf.debugging.assert_type(
+            tensor=parallel, tf_type=util.tf_dtype(dtype='long'),
+            message="Agent.observe: invalid type for parallel input."
+        )
+        tf.debugging.assert_scalar(
+            tensor=parallel[0], message="Agent.observe: parallel input has to be a scalar."
+        )
+        assertions.append(tf.debugging.assert_non_negative(
+            x=parallel, message="Agent.observe: parallel input has to be non-negative."
+        ))
+        assertions.append(tf.debugging.assert_less(
+            x=parallel[0],
+            y=tf.constant(value=self.parallel_interactions, dtype=util.tf_dtype(dtype='long')),
+            message="Agent.observe: parallel input has to be less than parallel_interactions."
+        ))
+        # shape of terminal equals shape of reward
+        assertions.append(tf.debugging.assert_equal(
+            x=tf.shape(input=terminal), y=tf.shape(input=reward),
+            message="Agent.observe: incompatible shapes of terminal and reward input."
+        ))
+        # size of terminal equals buffer index
+        assertions.append(tf.debugging.assert_equal(
+            x=tf.shape(input=terminal, out_type=util.tf_dtype(dtype='long'))[0],
+            y=tf.dtypes.cast(x=buffer_index, dtype=util.tf_dtype(dtype='long')),
+            message="Agent.observe: number of observe-timesteps has to be equal to number of "
+                    "buffered act-timesteps."
+        ))
+        # at most one terminal
+        assertions.append(tf.debugging.assert_less_equal(
+            x=tf.math.count_nonzero(input=terminal, dtype=util.tf_dtype(dtype='long')),
+            y=tf.constant(value=1, dtype=util.tf_dtype(dtype='long')),
+            message="Agent.observe: input contains more than one terminal."
+        ))
+        # if terminal, last timestep in batch
+        assertions.append(tf.debugging.assert_equal(
+            x=tf.math.reduce_any(input_tensor=tf.math.greater(x=terminal, y=zero)),
+            y=tf.math.greater(x=terminal[-1], y=zero),
+            message="Agent.observe: terminal is not the last input timestep."
+        ))
 
         # Set global tensors
         Module.update_tensors(
-            deterministic=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
             independent=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
-            optimization=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
+            deterministic=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
             timestep=self.global_timestep, episode=self.global_episode, update=self.global_update
         )
 
@@ -1137,7 +1423,8 @@ class Model(Module):
                 label=('timestep-reward', 'rewards'), name='timestep-reward', tensor=reward
             )
             assignment = self.episode_reward.scatter_nd_add(
-                indices=[parallel], updates=[tf.math.reduce_sum(input_tensor=reward, axis=0)]
+                indices=tf.expand_dims(input=parallel, axis=1),
+                updates=[tf.math.reduce_sum(input_tensor=reward, axis=0)]
             )
 
         # Reset episode reward
@@ -1149,7 +1436,7 @@ class Model(Module):
                 pass_tensors=zero_float  # , step='episode'
             )
             assignment = self.episode_reward.scatter_nd_update(
-                indices=[parallel], updates=[zero_float]
+                indices=tf.expand_dims(input=parallel, axis=1), updates=[zero_float]
             )
             with tf.control_dependencies(control_inputs=(assignment,)):
                 return util.no_operation()
@@ -1193,7 +1480,7 @@ class Model(Module):
         # Reset buffer index
         with tf.control_dependencies(control_inputs=(is_updated,)):
             reset_buffer_index = self.buffer_index.scatter_nd_update(
-                indices=[parallel], updates=[zero]
+                indices=tf.expand_dims(input=parallel, axis=1), updates=[zero]
             )
             dependencies = (reset_buffer_index,)
 
@@ -1216,7 +1503,9 @@ class Model(Module):
         def increment_episode():
             assignments = list()
             one = tf.constant(value=1, dtype=util.tf_dtype(dtype='long'))
-            assignments.append(self.episode.scatter_nd_add(indices=[parallel], updates=[one]))
+            assignments.append(self.episode.scatter_nd_add(
+                indices=tf.expand_dims(input=parallel, axis=1), updates=[one])
+            )
             assignments.append(self.global_episode.assign_add(delta=one, read_value=False))
             with tf.control_dependencies(control_inputs=assignments):
                 return util.no_operation()
@@ -1248,32 +1537,94 @@ class Model(Module):
     def tf_regularize(self, states, internals, auxiliaries):
         return super().tf_regularize()
 
-    def save(self, directory=None, filename=None, append_timestep=True):
-        if self.summarizer_spec is not None:
-            self.monitored_session.run(fetches=self.summarizer_flush)
+    def get_variable(self, variable):
+        if not variable.startswith(self.name):
+            variable = util.join_scopes(self.name, variable)
+        fetches = variable + '-output:0'
+        return self.monitored_session.run(fetches=fetches)
 
-        if directory is None:
-            assert self.saver_directory is not None
-            directory = self.saver_directory
-        if filename is None:
-            filename = self.saver_filename
-        save_path = os.path.join(directory, filename)
+    def assign_variable(self, variable, value):
+        if variable.startswith(self.name + '/'):
+            variable = variable[len(self.name) + 1:]
+        module = self
+        scope = variable.split('/')
+        for _ in range(len(scope) - 1):
+            module = module.modules[scope.pop(0)]
+        fetches = util.join_scopes(self.name, variable) + '-assign'
+        dtype = util.dtype(x=module.variables[scope[0]])
+        feed_dict = {util.join_scopes(self.name, 'assignment-') + dtype + '-input:0': value}
+        self.monitored_session.run(fetches=fetches, feed_dict=feed_dict)
 
-        return self.saver.save(
-            sess=self.session, save_path=save_path,
-            global_step=(self.global_timestep if append_timestep else None),
-            # latest_filename=None,  # Defaults to 'checkpoint'.
-            meta_graph_suffix='meta', write_meta_graph=True, write_state=True
-        )
+    def save(self, directory, filename, format, append=None):
+        path = os.path.join(directory, filename)
 
-    def restore(self, directory=None, filename=None):
-        if directory is None:
-            assert self.saver_directory
-            directory = self.saver_directory
-        if filename is None or not os.path.isfile(os.path.join(directory, filename + '.meta')):
-            save_path = tf.compat.v1.train.latest_checkpoint(checkpoint_dir=directory, latest_filename=None)
+        if append == 'timesteps':
+            append = self.global_timestep
+        elif append == 'episodes':
+            append = self.global_episode
+        elif append == 'updates':
+            append = self.global_update
         else:
-            save_path = os.path.join(directory, filename)
+            assert append is None
 
-        self.saver.restore(sess=self.session, save_path=save_path)
-        return self.reset()
+        if format == 'tensorflow':
+            if self.summarizer_spec is not None:
+                self.monitored_session.run(fetches=self.summarizer_flush)
+            saver_path = self.saver.save(
+                sess=self.session, save_path=path, global_step=append,
+                # latest_filename=None,  # Defaults to 'checkpoint'.
+                meta_graph_suffix='meta', write_meta_graph=True, write_state=True
+            )
+            assert saver_path.startswith(path)
+
+        elif format == 'numpy':
+            if append is not None:
+                append = self.monitored_session.run(fetches=append)
+                path += '-' + str(append) + '.npz'
+            variables = dict()
+            for variable in self.get_variables(only_saved=True):
+                name = variable.name[len(self.name) + 1: -2]
+                variables[name] = self.get_variable(variable=name)
+            np.savez(file=path, **variables)
+
+        elif format == 'hdf5':
+            if append is not None:
+                append = self.monitored_session.run(fetches=append)
+                path += '-' + str(append) + '.hdf5'
+            with h5py.File(name=path, mode='w') as filehandle:
+                for variable in self.get_variables(only_saved=True):
+                    name = variable.name[len(self.name) + 1: -2]
+                    filehandle.create_dataset(name=name, data=self.get_variable(variable=name))
+
+        else:
+            assert False
+
+        return path
+
+    def restore(self, directory, filename, format):
+        path = os.path.join(directory, filename)
+
+        if format == 'tensorflow':
+            self.saver.restore(sess=self.session, save_path=path)
+
+        elif format == 'numpy':
+            variables = np.load(file=(path + '.npz'))
+            for variable in self.get_variables(only_saved=True):
+                name = variable.name[len(self.name) + 1: -2]
+                self.assign_variable(variable=name, value=variables[name])
+
+        elif format == 'hdf5':
+            if os.path.isfile(path + '.hdf5'):
+                path = path + '.hdf5'
+            else:
+                path = path + '.h5'
+            with h5py.File(name=path, mode='r') as filehandle:
+                for variable in self.get_variables(only_saved=True):
+                    name = variable.name[len(self.name) + 1: -2]
+                    self.assign_variable(variable=name, value=filehandle[name])
+
+        else:
+            assert False
+
+        fetches = (self.global_timestep, self.global_episode, self.global_update)
+        return self.monitored_session.run(fetches=fetches)

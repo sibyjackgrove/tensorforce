@@ -13,8 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-import os
-
 from test.unittest_base import UnittestBase
 
 
@@ -52,8 +50,8 @@ class UnittestAgent(UnittestBase):
 
         if self.__class__.has_update:
             agent, environment = self.prepare(
-                timestep_range=(2, 5),  # too few steps for update otherwise
-                states=states, actions=actions, require_all=True, buffer_observe=False, update=1,
+                min_timesteps=2,  # too few steps for update otherwise
+                states=states, actions=actions, require_all=True, update=1,
                 policy=dict(network=dict(type='auto', size=8, internal_rnn=False))
                 # TODO: shouldn't be necessary!
             )
@@ -61,9 +59,7 @@ class UnittestAgent(UnittestBase):
         else:
             agent, environment = self.prepare(states=states, actions=actions)
 
-        agent.initialize()
         states = environment.reset()
-
         query = agent.get_query_tensors(function='act')
         actions, queried = agent.act(states=states, query=query)
         self.assertEqual(first=len(queried), second=len(query))
@@ -86,10 +82,11 @@ class UnittestAgent(UnittestBase):
 
         for _ in range(2):
             states = environment.reset()
+            internals = agent.initial_internals()
             terminal = False
             while not terminal:
                 states_batch.append(states)
-                actions = agent.act(states=states, independent=True)
+                actions, internals = agent.act(states=states, internals=internals, independent=True)
                 actions_batch.append(actions)
                 states, terminal, reward = environment.execute(actions=actions)
                 terminal_batch.append(terminal)

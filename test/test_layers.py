@@ -34,7 +34,7 @@ class TestLayers(UnittestBase, unittest.TestCase):
         )
         network = [
             dict(type='conv1d', size=8),
-            dict(type='conv1d_transpose', size=8),
+            # dict(type='conv1d_transpose', size=8),
             dict(type='linear', size=8)
         ]
         self.unittest(states=states, actions=actions, policy=dict(network=network))
@@ -48,7 +48,7 @@ class TestLayers(UnittestBase, unittest.TestCase):
         )
         network = [
             dict(type='conv2d', size=8),
-            dict(type='conv2d_transpose', size=8),
+            # dict(type='conv2d_transpose', size=8),
             dict(type='linear', size=8)
         ]
         self.unittest(states=states, actions=actions, policy=dict(network=network))
@@ -90,11 +90,12 @@ class TestLayers(UnittestBase, unittest.TestCase):
     def test_misc(self):
         self.start_tests(name='misc')
 
-        states = dict(type='float', shape=(3,))
+        states = dict(type='float', shape=(3, 2))
         network = [
             dict(type='activation', nonlinearity='tanh'),
             dict(type='dropout', rate=0.5),
             dict(type='function', function=(lambda x: x + 1.0)),
+            dict(type='reshape', shape=6),
             dict(function=(lambda x: x[:, :2]), output_spec=dict(shape=(2,)))
         ]
         self.unittest(states=states, policy=dict(network=network))
@@ -124,7 +125,7 @@ class TestLayers(UnittestBase, unittest.TestCase):
             dict(type='exponential_normalization'),
             dict(type='instance_normalization')
         ]
-        self.unittest(states=states, policy=dict(network=network))
+        self.unittest(states=states, require_observe=True, policy=dict(network=network))
 
     def test_pooling(self):
         self.start_tests(name='pooling')

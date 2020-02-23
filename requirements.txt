@@ -1,4 +1,9 @@
-numpy
+gym
+h5py
 matplotlib
+msgpack
+msgpack-numpy
+numpy
 pytest
+scipy==1.2.0
 tqdm

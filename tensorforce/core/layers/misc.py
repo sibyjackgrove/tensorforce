@@ -51,7 +51,9 @@ class Activation(Layer):
             'crelu', 'elu', 'leaky-relu', 'none', 'relu', 'selu', 'sigmoid', 'softmax', 'softplus',
             'softsign', 'swish', 'tanh'
         ):
-            raise TensorforceError('Invalid nonlinearity: {}'.format(self.nonlinearity))
+            raise TensorforceError.value(
+                name='activation', argument='nonlinearity', value=nonlinearity
+            )
         self.nonlinearity = nonlinearity
 
     def default_input_spec(self):
@@ -117,7 +119,9 @@ class Block(Layer):
     def __init__(self, name, layers, input_spec=None):
         # TODO: handle internal states and combine with layered network
         if len(layers) == 0:
-            raise TensorforceError.unexpected()
+            raise TensorforceError.value(
+                name='block', argument='layers', value=layers, hint='zero length'
+            )
 
         self._input_spec = input_spec
         self.layers = layers
@@ -192,8 +196,8 @@ class Dropout(Layer):
         super().set_input_spec(spec=spec)
 
         if spec['type'] != 'float':
-            raise TensorforceError(
-                "Invalid input type for dropout layer: {}.".format(spec['type'])
+            raise TensorforceError.value(
+                name='dropout', argument='input_spec', value=spec['type'], hint='!= float'
             )
 
     def tf_apply(self, x):
@@ -209,7 +213,7 @@ class Dropout(Layer):
                 pass_tensors=dropout
             )
 
-        skip_dropout = tf.math.logical_not(x=Module.retrieve_tensor(name='optimization'))
+        skip_dropout = tf.math.logical_not(x=Module.retrieve_tensor(name='deterministic'))
         zero = tf.constant(value=0.0, dtype=util.tf_dtype(dtype='float'))
         skip_dropout = tf.math.logical_or(x=skip_dropout, y=tf.math.equal(x=rate, y=zero))
         return self.cond(pred=skip_dropout, true_fn=no_dropout, false_fn=apply_dropout)
@@ -285,7 +289,7 @@ class Register(Layer):
         Args:
         """
         if not isinstance(tensor, str):
-            raise TensorforceError.type(name='register', argument='tensor', value=tensor)
+            raise TensorforceError.type(name='register', argument='tensor', dtype=type(tensor))
 
         self.tensor = tensor
 
@@ -304,6 +308,47 @@ class Register(Layer):
         last_scope = Module.global_scope.pop()
         Module.update_tensor(name=self.tensor, tensor=x)
         Module.global_scope.append(last_scope)
+
+        return x
+
+
+class Reshape(Layer):
+    """
+    Reshape layer (specification key: `reshape`).
+
+    Args:
+        name (string): Layer name
+            (<span style="color:#00C000"><b>default</b></span>: internally chosen).
+        shape (<i>int | iter[int]</i>): New shape
+            (<span style="color:#C00000"><b>required</b></span>).
+        input_spec (specification): Input tensor specification
+            (<span style="color:#00C000"><b>internal use</b></span>).
+        summary_labels ('all' | iter[string]): Labels of summaries to record
+            (<span style="color:#00C000"><b>default</b></span>: inherit value of parent module).
+    """
+
+    def __init__(self, name, shape, input_spec=None, summary_labels=None):
+        if isinstance(shape, int):
+            self.shape = (shape,)
+        else:
+            self.shape = tuple(shape)
+
+        super().__init__(
+            name=name, input_spec=input_spec, summary_labels=summary_labels, l2_regularization=0.0
+        )
+
+    def default_input_spec(self):
+        return dict(type=None, shape=None)
+
+    def get_output_spec(self, input_spec):
+        if util.product(xs=input_spec['shape']) != util.product(xs=self.shape):
+            raise TensorforceError.value(name='Reshape', argument='shape', value=self.shape)
+        input_spec['shape'] = self.shape
+
+        return input_spec
+
+    def tf_apply(self, x):
+        x = tf.reshape(tensor=x, shape=((-1,) + self.shape))
 
         return x
 
@@ -335,12 +380,15 @@ class Retrieve(Layer):
         self, name, tensors, aggregation='concat', axis=0, input_spec=None, summary_labels=None
     ):
         if not isinstance(tensors, str) and not util.is_iterable(x=tensors):
-            raise TensorforceError.type(name='retrieve', argument='tensors', value=tensors)
+            raise TensorforceError.type(name='retrieve', argument='tensors', dtype=type(tensors))
         elif util.is_iterable(x=tensors) and len(tensors) == 0:
-            raise TensorforceError.value(name='retrieve', argument='tensors', value=tensors)
+            raise TensorforceError.value(
+                name='retrieve', argument='tensors', value=tensors, hint='zero length'
+            )
         if aggregation not in ('concat', 'product', 'stack', 'sum'):
             raise TensorforceError.value(
-                name='retrieve', argument='aggregation', value=aggregation
+                name='retrieve', argument='aggregation', value=aggregation,
+                hint='not in {concat,product,stack,sum}'
             )
 
         self.tensors = (tensors,) if isinstance(tensors, str) else tuple(tensors)
@@ -376,16 +424,20 @@ class Retrieve(Layer):
         if all(dtype == dtypes[0] for dtype in dtypes):
             dtype = dtypes[0]
         else:
-            raise TensorforceError.value(name='tensor types', value=dtypes)
+            raise TensorforceError.value(name='retrieve', argument='tensor types', value=dtypes)
 
         if self.aggregation == 'concat':
             if any(len(shape) != len(shapes[0]) for shape in shapes):
-                raise TensorforceError.value(name='tensor shapes', value=shapes)
+                raise TensorforceError.value(
+                    name='retrieve', argument='tensor shapes', value=shapes
+                )
             elif any(
                 shape[n] != shapes[0][n] for shape in shapes for n in range(len(shape))
                 if n != self.axis
             ):
-                raise TensorforceError.value(name='tensor shapes', value=shapes)
+                raise TensorforceError.value(
+                    name='retrieve', argument='tensor shapes', value=shapes
+                )
             shape = tuple(
                 sum(shape[n] for shape in shapes) if n == self.axis else shapes[0][n]
                 for n in range(len(shapes[0]))
@@ -393,9 +445,13 @@ class Retrieve(Layer):
 
         elif self.aggregation == 'stack':
             if any(len(shape) != len(shapes[0]) for shape in shapes):
-                raise TensorforceError.value(name='tensor shapes', value=shapes)
+                raise TensorforceError.value(
+                    name='retrieve', argument='tensor shapes', value=shapes
+                )
             elif any(shape[n] != shapes[0][n] for shape in shapes for n in range(len(shape))):
-                raise TensorforceError.value(name='tensor shapes', value=shapes)
+                raise TensorforceError.value(
+                    name='retrieve', argument='tensor shapes', value=shapes
+                )
             shape = tuple(
                 len(shapes) if n == self.axis else shapes[0][n - int(n > self.axis)]
                 for n in range(len(shapes[0]) + 1)
@@ -405,9 +461,13 @@ class Retrieve(Layer):
             # Check and unify tensor shapes
             for shape in shapes:
                 if len(shape) != len(shapes[0]):
-                    raise TensorforceError.value(name='tensor shapes', value=shapes)
+                    raise TensorforceError.value(
+                        name='retrieve', argument='tensor shapes', value=shapes
+                    )
                 if any(x != y and x != 1 and y != 1 for x, y in zip(shape, shapes[0])):
-                    raise TensorforceError.value(name='tensor shapes', value=shapes)
+                    raise TensorforceError.value(
+                        name='retrieve', argument='tensor shapes', value=shapes
+                    )
             shape = tuple(max(shape[n] for shape in shapes) for n in range(len(shapes[0])))
 
         # Missing num_values, min/max_value!!!
@@ -490,7 +550,7 @@ class Reuse(Layer):
         # self.layer = self.parent.modules[self.layer]
 
         if self.layer not in Layer.layers:
-            raise TensorforceError.unexpected()
+            raise TensorforceError.value(name='reuse', argument='layer', value=self.layer)
 
         self.layer = Layer.layers[self.layer]
 

@@ -4,12 +4,14 @@
 [![Gitter](https://badges.gitter.im/tensorforce/community.svg)](https://gitter.im/tensorforce/community)
 [![Build Status](https://travis-ci.com/tensorforce/tensorforce.svg?branch=master)](https://travis-ci.com/tensorforce/tensorforce)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/tensorforce/tensorforce/blob/master/LICENSE)
+[![Donate](https://img.shields.io/badge/donate-GitHub_Sponsors-yellow)](https://github.com/sponsors/AlexKuhnle)
+[![Donate](https://img.shields.io/badge/donate-Liberapay-yellow)](https://liberapay.com/TensorforceTeam/donate)
 
 
 
 #### Introduction
 
-Tensorforce is an open-source deep reinforcement learning framework, with an emphasis on modularized flexible library design and straightforward usability for applications in research and practice. Tensorforce is built on top of [Google's TensorFlow framework](https://www.tensorflow.org/) and compatible with Python 3 (Python 2 support was dropped with version 0.5).
+Tensorforce is an open-source deep reinforcement learning framework, with an emphasis on modularized flexible library design and straightforward usability for applications in research and practice. Tensorforce is built on top of [Google's TensorFlow framework](https://www.tensorflow.org/) version 2.0 (!) and compatible with Python 3 (Python 2 support was dropped with version 0.5).
 
 Tensorforce follows a set of high-level design choices which differentiate it from other similar libraries:
 
@@ -22,9 +24,10 @@ Tensorforce follows a set of high-level design choices which differentiate it fr
 #### Quicklinks
 
 - [Documentation](http://tensorforce.readthedocs.io) and [update notes](https://github.com/tensorforce/tensorforce/blob/master/UPDATE_NOTES.md)
-- [Benchmarks]((https://github.com/tensorforce/tensorforce/blob/master/benchmarks) and [projects using Tensorforce](https://github.com/tensorforce/tensorforce/blob/master/PROJECTS.md)
 - [Contact](mailto:tensorforce.team@gmail.com) and [Gitter channel](https://gitter.im/tensorforce/community)
+- [Benchmarks](https://github.com/tensorforce/tensorforce/blob/master/benchmarks) and [projects using Tensorforce](https://github.com/tensorforce/tensorforce/blob/master/PROJECTS.md)
 - [Roadmap](https://github.com/tensorforce/tensorforce/blob/master/ROADMAP.md) and [contribution guidelines](https://github.com/tensorforce/tensorforce/blob/master/CONTRIBUTING.md)
+- [GitHub Sponsors](https://github.com/sponsors/AlexKuhnle) and [Liberapay](https://liberapay.com/TensorforceTeam/donate)
 
 
 
@@ -35,14 +38,13 @@ Tensorforce follows a set of high-level design choices which differentiate it fr
 - [Command line usage](#command-line-usage)
 - [Features](#features)
 - [Environment adapters](#environment-adapters)
-- [Contact for support and feedback](#contact-for-support-and-feedback)
+- [Support, feedback and donating](#support-feedback-and-donating)
 - [Core team and contributors](#core-team-and-contributors)
 - [Cite Tensorforce](#cite-tensorforce)
 
 
 
 ## Installation
-
 
 A stable version of Tensorforce is periodically updated on PyPI and installed as follows:
 
@@ -58,7 +60,7 @@ cd tensorforce
 pip3 install -e .
 ```
 
-Tensorforce is built on top of [Google's TensorFlow](https://www.tensorflow.org/) and requires that either `tensorflow` or `tensorflow-gpu` is installed, currently as version `1.13.1`. To include the correct version of TensorFlow with the installation of Tensorforce, simply add the flag `tf` for the normal CPU version or `tf_gpu` for the GPU version:
+Tensorforce is built on top of [Google's TensorFlow](https://www.tensorflow.org/) and requires that either `tensorflow` or `tensorflow-gpu` is installed. To include the correct version of TensorFlow with the installation of Tensorforce, simply add the flag `tf` for the normal CPU version or `tf_gpu` for the GPU version:
 
 ```bash
 # PyPI version plus TensorFlow CPU version
@@ -75,14 +77,17 @@ Some environments require additional packages, for which there are also options 
 ## Quickstart example code
 
 ```python
-from tensorforce.agents import Agent
+from tensorforce import Agent, Environment
+
+# Pre-defined or custom environment
+environment = Environment.create(
+    environment='gym', level='CartPole', max_episode_timesteps=500
+)
 
 # Instantiate a Tensorforce agent
 agent = Agent.create(
     agent='tensorforce',
-    states=dict(type='float', shape=(10,)),
-    actions=dict(type='int', num_values=5),
-    max_episode_timesteps=100,
+    environment=environment,  # alternatively: states, actions, (max_episode_timesteps)
     memory=10000,
     update=dict(unit='timesteps', batch_size=64),
     optimizer=dict(type='adam', learning_rate=3e-4),
@@ -91,17 +96,21 @@ agent = Agent.create(
     reward_estimation=dict(horizon=20)
 )
 
-# Retrieve the latest (observable) environment state
-state = get_current_state()  # (float array of shape [10])
+# Train for 300 episodes
+for _ in range(300):
 
-# Query the agent for its action decision
-action = agent.act(states=state)  # (scalar between 0 and 4)
+    # Initialize episode
+    states = environment.reset()
+    terminal = False
 
-# Execute the decision and retrieve the current performance score
-reward = execute_decision(action)  # (any scalar float)
+    while not terminal:
+        # Episode timestep
+        actions = agent.act(states=states)
+        states, terminal, reward = environment.execute(actions=actions)
+        agent.observe(terminal=terminal, reward=reward)
 
-# Pass feedback about performance (and termination) to the agent
-agent.observe(reward=reward, terminal=False)
+agent.close()
+environment.close()
 ```
 
 
@@ -111,7 +120,7 @@ agent.observe(reward=reward, terminal=False)
 Tensorforce comes with a range of [example configurations](https://github.com/tensorforce/tensorforce/tree/master/benchmarks/configs) for different popular reinforcement learning environments. For instance, to run Tensorforce's implementation of the popular [Proximal Policy Optimization (PPO) algorithm](https://arxiv.org/abs/1707.06347) on the [OpenAI Gym CartPole environment](https://gym.openai.com/envs/CartPole-v1/), execute the following line:
 
 ```bash
-python3 run.py benchmarks/configs/ppo.json gym --level CartPole-v1 -e 300
+python3 run.py benchmarks/configs/ppo1.json gym --level CartPole-v1 -e 300
 ```
 
 For more information check out the [documentation](http://tensorforce.readthedocs.io).
@@ -120,15 +129,23 @@ For more information check out the [documentation](http://tensorforce.readthedoc
 
 ## Features
 
-- **Neural network layers**: Dense fully-connected layer, embedding layer, 1- and 2-dimensional convolution, pooling, LSTM, activation, dropout, normalization, and more; *plus* support of Keras layers.
+- **Network layers**: Fully-connected, 1- and 2-dimensional convolutions, embeddings, pooling, RNNs, dropout, normalization, and more; *plus* support of Keras layers.
+- **Network architecture**: Support for multi-state inputs and layer (block) reuse, simple definition of directed acyclic graph structures via register/retrieve layer, plus support for arbitrary architectures.
 - **Memory types**: Simple batch buffer memory, random replay memory.
-- **Policy distributions**: Bernoulli distribution for boolean actions, categorical distribution for (finite) integer actions, Gaussian distribution for continuous actions, Beta distribution for range-constrained continuous actions.
-- **Optimization algorithms**: Various gradient-based optimizers provided by TensorFlow like Adam/AdaDelta/Momentum/RMSProp/etc, evolutionary optimizer, natural-gradient-based optimizer, plus a range of meta-optimizers.
-- **Execution modes**: Parallel execution, distributed execution.
-- **Other features**: state/reward preprocessing, exploration, variable noise, regularization losses.
+- **Policy distributions**: Bernoulli distribution for boolean actions, categorical distribution for (finite) integer actions, Gaussian distribution for continuous actions, Beta distribution for range-constrained continuous actions, multi-action support.
+- **Reward estimation**: Configuration options for estimation horizon, future reward discount, state/state-action/advantage estimation, and for whether to consider terminal and horizon states.
+- **Training objectives**: (Deterministic) policy gradient, state-(action-)value approximation.
+- **Optimization algorithms**: Various gradient-based optimizers provided by TensorFlow like Adam/AdaDelta/RMSProp/etc, evolutionary optimizer, natural-gradient-based optimizer, plus a range of meta-optimizers.
+- **Exploration**: Randomized actions, sampling temperature, variable noise.
+- **Preprocessing**: Clipping, deltafier, sequence, image processing.
+- **Regularization**: L2 and entropy regularization.
+- **Execution modes**: Parallelized execution of multiple environments based on Python's `multiprocessing` and `socket`.
 - **TensorBoard support**.
 
-By combining these modular components in different ways, a variety of popular deep reinforcement learning models/features can be replicated: [Deep Q-learning (DQN)](https://arxiv.org/abs/1312.5602) and variations like [Double-DQN](https://arxiv.org/abs/1509.06461) or [Deep Q-learning from Demonstrations (DQfD)](https://arxiv.org/abs/1704.03732), [vanilla policy-gradient algorithm / REINFORCE](http://www-anw.cs.umass.edu/~barto/courses/cs687/williams92simple.pdf), [Proximal Policy Optimization (PPO)](https://arxiv.org/abs/1707.06347), [Actor-critic and A3C](https://arxiv.org/abs/1602.01783), [Trust Region Policy Optimization (TRPO)](https://arxiv.org/abs/1502.05477), [Normalised Advantage Function (NAF)](https://arxiv.org/abs/1603.00748), [Generalized Advantage estimation (GAE)](https://arxiv.org/abs/1506.02438), etc.
+By combining these modular components in different ways, a variety of popular deep reinforcement learning models/features can be replicated:
+- Q-learning: [Deep Q-learning](https://www.nature.com/articles/nature14236), [Double-DQN](https://arxiv.org/abs/1509.06461), [Dueling DQN](https://arxiv.org/abs/1511.06581), [n-step DQN](https://arxiv.org/abs/1602.01783), [Normalised Advantage Function (NAF)](https://arxiv.org/abs/1603.00748)
+- Policy gradient: [vanilla policy-gradient / REINFORCE](http://www-anw.cs.umass.edu/~barto/courses/cs687/williams92simple.pdf), [Actor-critic and A3C](https://arxiv.org/abs/1602.01783), [Proximal Policy Optimization](https://arxiv.org/abs/1707.06347), [Trust Region Policy Optimization](https://arxiv.org/abs/1502.05477), [Deterministic Policy Gradient](https://arxiv.org/abs/1509.02971)
+- Features: [Generalized Advantage estimation (GAE)](https://arxiv.org/abs/1506.02438), etc.
 
 Note that in general the replication is not 100% faithful, since the models as described in the corresponding paper often involve additional minor tweaks and modifications which are hard to support with a modular design (and, arguably, also questionable whether it is important/desirable to support them). On the upside, these models are just a few examples from the multitude of module combinations supported by Tensorforce.
 
@@ -146,17 +163,21 @@ Note that in general the replication is not 100% faithful, since the models as d
 
 
 
-## Contact for support and feedback
+## Support, feedback and donating
 
 Please get in touch via [mail](mailto:tensorforce.team@gmail.com) or on [Gitter](https://gitter.im/tensorforce/community) if you have questions, feedback, ideas for features/collaboration, or if you seek support for applying Tensorforce to your problem.
+
+If you want to support the Tensorforce core team (see below), please also consider donating: [GitHub Sponsors](https://github.com/sponsors/AlexKuhnle) or [Liberapay](https://liberapay.com/TensorforceTeam/donate).
 
 
 
 ## Core team and contributors
 
-Tensorforce is currently developed and maintained by [Alexander Kuhnle](https://github.com/AlexKuhnle). Earlier versions of Tensorforce (<= 0.4.2) were developed by [Michael Schaarschmidt](https://github.com/michaelschaarschmidt), [Alexander Kuhnle](https://github.com/AlexKuhnle) and [Kai Fricke](https://github.com/krfricke).
+Tensorforce is currently developed and maintained by [Alexander Kuhnle](https://github.com/AlexKuhnle).
 
-The advanced parallel execution functionality (currently in [this module](https://github.com/tensorforce/tensorforce/tree/master/tensorforce/contrib)) was contributed by Jean Rabault (@jerabaul29). Moreover, the pretraining feature was largely developed in collaboration with Hongwei Tang (@thw1021) and Jean Rabault (@jerabaul29).
+Earlier versions of Tensorforce (<= 0.4.2) were developed by [Michael Schaarschmidt](https://github.com/michaelschaarschmidt), [Alexander Kuhnle](https://github.com/AlexKuhnle) and [Kai Fricke](https://github.com/krfricke).
+
+The advanced parallel execution functionality was originally contributed by Jean Rabault (@jerabaul29) and Vincent Belus (@vbelus). Moreover, the pretraining feature was largely developed in collaboration with Hongwei Tang (@thw1021) and Jean Rabault (@jerabaul29).
 
 We are very grateful for our open-source contributors (listed according to Github, updated periodically):
 

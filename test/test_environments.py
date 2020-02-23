@@ -14,70 +14,106 @@
 # ==============================================================================
 
 import pytest
+from threading import Thread
 import unittest
 
+from tensorforce import Environment, Runner
+
 from test.unittest_base import UnittestBase
+from test.unittest_environment import UnittestEnvironment
 
 
 class TestEnvironments(UnittestBase, unittest.TestCase):
 
     num_episodes = 2
 
-    @pytest.mark.skip(reason='not installed as part of travis')
-    def test_ale(self):
-        self.start_tests(name='ale')
-        self.unittest(
-            environment=dict(
-                environment='ale', level='test/data/Breakout.bin', max_episode_timesteps=100
-            ), num_episodes=2
+    @pytest.mark.skip(reason='problems with processes/sockets in travis')
+    def test_remote_environments(self):
+        self.start_tests(name='remote-environments')
+
+        agent, _ = self.prepare(
+            require_observe=True, update=dict(unit='episodes', batch_size=1),
+            parallel_interactions=2
+        )
+        environment = dict(
+            environment=UnittestEnvironment, states=self.__class__.states,
+            actions=self.__class__.actions, min_timesteps=self.__class__.min_timesteps
         )
 
-    @pytest.mark.skip(reason='not installed as part of travis')
-    def test_maze_explorer(self):
-        self.start_tests(name='maze-explorer')
-        self.unittest(
-            environment=dict(environment='mazeexp', level=0, max_episode_timesteps=100),
-            num_episodes=2
+        runner = Runner(
+            agent=agent, environment=environment, num_parallel=2, max_episode_timesteps=5,
+            remote='multiprocessing'
         )
+        runner.run(num_episodes=self.__class__.num_episodes, use_tqdm=False)
+        runner.close()
+        self.finished_test()
 
-    @pytest.mark.skip(reason='not installed as part of travis')
-    def test_open_sim(self):
-        self.start_tests(name='open-sim')
-        self.unittest(environment=dict(environment='osim', level='Arm2D'), num_episodes=2)
+        def server(port):
+            Environment.create(
+                environment=environment, max_episode_timesteps=5, remote='socket-server',
+                port=port, states=self.__class__.states, actions=self.__class__.actions,
+                min_timesteps=self.__class__.min_timesteps
+            )
+
+        server1 = Thread(target=server, kwargs=dict(port=65432))
+        server2 = Thread(target=server, kwargs=dict(port=65433))
+        server1.start()
+        server2.start()
+        runner = Runner(
+            agent=agent, num_parallel=2, remote='socket-client', host='127.0.0.1', port=65432
+        )
+        runner.run(num_episodes=self.__class__.num_episodes, use_tqdm=False)
+        runner.close()
+        server1.join()
+        server2.join()
+
+        agent.close()
+        self.finished_test()
+
+    # @pytest.mark.skip(reason='not installed as part of travis')
+    # def test_ale(self):
+    #     self.start_tests(name='ale')
+    #     self.unittest(
+    #         environment=dict(environment='ale', level='test/data/Breakout.bin'), num_episodes=2
+    #     )
+
+    # @pytest.mark.skip(reason='not installed as part of travis')
+    # def test_maze_explorer(self):
+    #     self.start_tests(name='maze-explorer')
+    #     self.unittest(environment=dict(environment='mazeexp', level=0))
+
+    # @pytest.mark.skip(reason='not installed as part of travis')
+    # def test_open_sim(self):
+    #     self.start_tests(name='open-sim')
+    #     self.unittest(environment=dict(environment='osim', level='Arm2D'))
 
     def test_openai_gym(self):
         self.start_tests(name='openai-gym')
-        self.unittest(environment=dict(environment='gym', level='CartPole-v0'), num_episodes=2)
 
+        # state: box, action: discrete
+        self.unittest(environment=dict(environment='gym', level='CartPole-v0'))
+
+        # state: discrete, action: box
         self.unittest(
-            environment=dict(
-                environment='gym', level='CartPole', max_episode_steps=False,
-                max_episode_timesteps=5
-            ), num_episodes=2
+            environment=dict(environment='gym', level='GuessingGame', max_episode_steps=False)
         )
 
-        from gym.envs.classic_control import CartPoleEnv
+        # state: discrete, action: tuple(discrete)
+        from gym.envs.algorithmic import ReverseEnv
+        self.unittest(environment=ReverseEnv)
 
-        self.unittest(
-            environment=dict(environment='gym', level=CartPoleEnv(), max_episode_timesteps=100),
-            num_episodes=2
-        )
+        # state: tuple, action: discrete
+        from gym.envs.toy_text import BlackjackEnv
+        self.unittest(environment=BlackjackEnv())
 
     def test_openai_retro(self):
         self.start_tests(name='openai-retro')
-        self.unittest(
-            environment=dict(
-                environment='retro', level='Airstriker-Genesis', max_episode_timesteps=100
-            ), num_episodes=2
-        )
+        self.unittest(environment=dict(environment='retro', level='Airstriker-Genesis'))
 
     @pytest.mark.skip(reason='not installed as part of travis')
     def test_ple(self):
         self.start_tests(name='pygame-learning-environment')
-        self.unittest(
-            environment=dict(environment='ple', level='Pong', max_episode_timesteps=100),
-            num_episodes=2
-        )
+        self.unittest(environment=dict(environment='ple', level='Pong'))
 
     @pytest.mark.skip(reason='not installed as part of travis')
     def test_vizdoom(self):

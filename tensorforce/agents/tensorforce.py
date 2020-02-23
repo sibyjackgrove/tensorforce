@@ -26,12 +26,12 @@ from tensorforce.core.models import TensorforceModel
 
 class TensorforceAgent(Agent):
     """
-    Tensorforce Agent (specification key: `tensorforce`).
+    Tensorforce agent (specification key: `tensorforce`).
 
-    Base class for a broad class of deep reinforcement learning agents, which act according to a
-    policy parametrized by a neural network, leverage a memory module for periodic updates based on
-    batches of experience, and optionally employ a baseline/critic/target policy for improved
-    reward estimation.
+    Highly configurable agent and basis for a broad class of deep reinforcement learning agents,
+    which act according to a policy parametrized by a neural network, leverage a memory module for
+    periodic updates based on batches of experience, and optionally employ a baseline/critic/target
+    policy for improved reward estimation.
 
     Args:
         states (specification): States specification
@@ -63,7 +63,7 @@ class TensorforceAgent(Agent):
             <li><b>min_value/max_value</b> (<i>float</i>) &ndash; minimum/maximum action value
             (<span style="color:#00C000"><b>optional</b></span> for type "float").</li>
             </ul>
-        max_episode_timesteps (int > 0): Maximum number of timesteps per episode
+        max_episode_timesteps (int > 0): Upper bound for numer of timesteps per episode
             (<span style="color:#00C000"><b>default</b></span>: not given, better implicitly
             specified via `environment` argument for `Agent.create(...)`).
 
@@ -147,7 +147,7 @@ class TensorforceAgent(Agent):
             regularization, to discourage the policy distribution being too "certain" / spiked
             (<span style="color:#00C000"><b>default</b></span>: 0.0).
 
-        name (string): Agent name, used e.g. for TensorFlow scopes
+        name (string): Agent name, used e.g. for TensorFlow scopes and saver default filename
             (<span style="color:#00C000"><b>default</b></span>: "agent").
         device (string): Device name
             (<span style="color:#00C000"><b>default</b></span>: TensorFlow default).
@@ -171,7 +171,7 @@ class TensorforceAgent(Agent):
             <li><b>directory</b> (<i>path</i>) &ndash; saver directory
             (<span style="color:#C00000"><b>required</b></span>).</li>
             <li><b>filename</b> (<i>string</i>) &ndash; model filename
-            (<span style="color:#00C000"><b>default</b></span>: "agent").</li>
+            (<span style="color:#00C000"><b>default</b></span>: agent name).</li>
             <li><b>frequency</b> (<i>int > 0</i>) &ndash; how frequently in seconds to save the
             model (<span style="color:#00C000"><b>default</b></span>: 600 seconds).</li>
             <li><b>load</b> (<i>bool | str</i>) &ndash; whether to load the existing model, or
@@ -275,12 +275,19 @@ class TensorforceAgent(Agent):
                 summarizer=summarizer, recorder=recorder, config=config
             )
 
-        if buffer_observe is True and parallel_interactions == 1 and summarizer is not None:
+        if isinstance(update, int) or update['unit'] == 'timesteps':
+            if parallel_interactions > 1:
+                raise TensorforceError.value(
+                    name='agent', argument='update', value=update,
+                    condition='parallel_interactions > 1'
+                )
+            if buffer_observe is not True:
+                raise TensorforceError.invalid(
+                    name='agent', argument='buffer_observe', condition='update[unit] = timesteps'
+                )
             buffer_observe = False
 
-        if isinstance(update, int) or update['unit'] == 'timesteps':
-            if buffer_observe is not True or parallel_interactions > 1:
-                TensorforceError.unexpected()
+        if buffer_observe is True and parallel_interactions == 1 and summarizer is not None:
             buffer_observe = False
 
         super().__init__(
@@ -295,7 +302,10 @@ class TensorforceAgent(Agent):
         reward_estimation = dict(reward_estimation)
         if reward_estimation['horizon'] == 'episode':
             if max_episode_timesteps is None:
-                raise TensorforceError.unexpected()
+                raise TensorforceError.value(
+                    name='agent', argument='reward_estimation[horizon]', value='episode',
+                    condition='max_episode_timesteps is None'
+                )
             reward_estimation['horizon'] = max_episode_timesteps
         if 'capacity' not in reward_estimation:
             # TODO: Doesn't take network horizon into account, needs to be set internally to max
@@ -304,7 +314,10 @@ class TensorforceAgent(Agent):
             #         self.buffer_observe, reward_estimation['horizon'] + 2
             #     )
             if max_episode_timesteps is None:
-                raise TensorforceError.unexpected()
+                raise TensorforceError.required(
+                    name='agent', argument='reward_estimation[capacity]',
+                    condition='max_episode_timesteps is None'
+                )
             if isinstance(reward_estimation['horizon'], int):
                 reward_estimation['capacity'] = max(
                     max_episode_timesteps, reward_estimation['horizon']
@@ -313,20 +326,33 @@ class TensorforceAgent(Agent):
                 reward_estimation['capacity'] = max_episode_timesteps
         self.experience_size = reward_estimation['capacity']
 
-        if memory is None:
+        if memory is None or (isinstance(memory, dict) and 'capacity' not in memory):
             # predecessor/successor?
-            if max_episode_timesteps is None or not isinstance(update['batch_size'], int) \
-                    or not isinstance(reward_estimation['horizon'], int):
-                raise TensorforceError.unexpected()
+            if max_episode_timesteps is None:
+                raise TensorforceError.required(
+                    name='agent', argument='memory', condition='max_episode_timesteps is None'
+                )
+            elif not isinstance(update['batch_size'], int):
+                raise TensorforceError.required(
+                    name='agent', argument='memory', condition='update[batch_size] not int'
+                )
+            elif not isinstance(reward_estimation['horizon'], int):
+                raise TensorforceError.required(
+                    name='agent', argument='memory', condition='reward_estimation[horizon] not int'
+                )
             if update['unit'] == 'timesteps':
-                memory = update['batch_size'] + max_episode_timesteps + \
+                capacity = update['batch_size'] + max_episode_timesteps + \
                     reward_estimation['horizon']
-                # memory = ceil(update['batch_size'] / max_episode_timesteps) * max_episode_timesteps
-                # memory += int(update['batch_size'] / max_episode_timesteps >= 1.0)
+                # capacity = ceil(update['batch_size'] / max_episode_timesteps) * max_episode_timesteps
+                # capacity += int(update['batch_size'] / max_episode_timesteps >= 1.0)
             elif update['unit'] == 'episodes':
-                memory = update['batch_size'] * max_episode_timesteps + \
+                capacity = update['batch_size'] * max_episode_timesteps + \
                     max(reward_estimation['horizon'], max_episode_timesteps)
-            memory = max(memory, min(self.buffer_observe, max_episode_timesteps))
+            capacity = max(capacity, min(self.buffer_observe, max_episode_timesteps))
+            if memory is None:
+                memory = capacity
+            else:
+                memory['capacity'] = capacity
 
         self.model = TensorforceModel(
             # Model
@@ -342,14 +368,21 @@ class TensorforceAgent(Agent):
             entropy_regularization=entropy_regularization
         )
 
-        assert max_episode_timesteps is None or self.model.memory.capacity > max_episode_timesteps
+        if max_episode_timesteps is not None and \
+                self.model.memory.capacity <= max_episode_timesteps:
+            raise TensorforceError.value(
+                name='agent', argument='memory.capacity', value=self.model.memory.capacity,
+                hint='<= max_episode_timesteps'
+            )
 
-    def experience(self, states, actions, terminal, reward, internals=None, query=None, **kwargs):
+    def experience(
+        self, states, actions, terminal, reward, internals=None, query=None, **kwargs
+    ):
         """
         Feed experience traces.
 
         Args:
-            states (dict[array[state]): Dictionary containing arrays of states
+            states (dict[array[state]]): Dictionary containing arrays of states
                 (<span style="color:#C00000"><b>required</b></span>).
             actions (dict[array[action]]): Dictionary containing arrays of actions
                 (<span style="color:#C00000"><b>required</b></span>).
@@ -357,7 +390,7 @@ class TensorforceAgent(Agent):
                 (<span style="color:#C00000"><b>required</b></span>).
             reward (array[float]): Array of rewards
                 (<span style="color:#C00000"><b>required</b></span>).
-            internals (dict[state]): Dictionary containing arrays of internal states
+            internals (dict[state]): Dictionary containing arrays of internal agent states
                 (<span style="color:#00C000"><b>default</b></span>: no internal states).
             query (list[str]): Names of tensors to retrieve
                 (<span style="color:#00C000"><b>default</b></span>: none).
@@ -365,7 +398,7 @@ class TensorforceAgent(Agent):
         """
         assert (self.buffer_indices == 0).all()
         assert util.reduce_all(predicate=util.not_nan_inf, xs=states)
-        assert internals is None  # or util.reduce_all(predicate=util.not_nan_inf, xs=internals)
+        assert internals is None or util.reduce_all(predicate=util.not_nan_inf, xs=internals)
         assert util.reduce_all(predicate=util.not_nan_inf, xs=actions)
         assert util.reduce_all(predicate=util.not_nan_inf, xs=reward)
 
@@ -381,13 +414,13 @@ class TensorforceAgent(Agent):
         states = util.normalize_values(
             value_type='state', values=states, values_spec=self.states_spec
         )
-        if internals is None:
-            internals = OrderedDict()
         actions = util.normalize_values(
             value_type='action', values=actions, values_spec=self.actions_spec
         )
+        if internals is None:
+            internals = OrderedDict()
 
-        if isinstance(terminal, bool):
+        if isinstance(terminal, (bool, int)):
             states = util.fmap(function=(lambda x: [x]), xs=states, depth=1)
             actions = util.fmap(function=(lambda x: [x]), xs=actions, depth=1)
             terminal = [terminal]
@@ -480,7 +513,9 @@ class TensorforceAgent(Agent):
                 (<span style="color:#00C000"><b>default</b></span>: 1).
         """
         if not os.path.isdir(directory):
-            raise TensorforceError.unexpected()
+            raise TensorforceError.value(
+                name='agent.pretrain', argument='directory', value=directory
+            )
         files = sorted(
             os.path.join(directory, f) for f in os.listdir(directory)
             if os.path.isfile(os.path.join(directory, f)) and f.startswith('trace-')

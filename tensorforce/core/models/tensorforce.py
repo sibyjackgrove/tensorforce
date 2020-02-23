@@ -46,7 +46,10 @@ class TensorforceModel(Model):
         else:
             internals = policy_cls.internals_spec(first_arg, name='policy', **kwargs)
         if any(name.startswith('baseline-') for name in internals):
-            raise TensorforceError.unexpected()
+            raise TensorforceError.value(
+                name='model', argument='internals', value=list(internals),
+                hint='starts with baseline-'
+            )
 
         # Baseline internals specification
         if baseline_policy is None:
@@ -64,8 +67,8 @@ class TensorforceModel(Model):
                 )
             for name, spec in baseline_internals.items():
                 if name in internals:
-                    raise TensorforceError(
-                        "Name overlap between policy and baseline internals: {}.".format(name)
+                    raise TensorforceError.collision(
+                        name='model', value='internals', group1='policy', group2='baseline'
                     )
                 internals[name] = spec
 
@@ -92,17 +95,21 @@ class TensorforceModel(Model):
 
         # Update mode
         if not all(key in ('batch_size', 'frequency', 'start', 'unit') for key in update):
-            raise TensorforceError.value(name='update', value=list(update))
+            raise TensorforceError.value(
+                name='agent', argument='update', value=list(update),
+                hint='not from {batch_size,frequency,start,unit}'
+            )
         # update: unit
         elif 'unit' not in update:
-            raise TensorforceError.required(name='update', value='unit')
+            raise TensorforceError.required(name='agent', argument='update[unit]')
         elif update['unit'] not in ('timesteps', 'episodes'):
             raise TensorforceError.value(
-                name='update', argument='unit', value=update['unit']
+                name='agent', argument='update[unit]', value=update['unit'],
+                hint='not in {timesteps,episodes}'
             )
         # update: batch_size
         elif 'batch_size' not in update:
-            raise TensorforceError.required(name='update', value='batch_size')
+            raise TensorforceError.required(name='agent', argument='update[batch_size]')
 
         self.update_unit = update['unit']
         self.update_batch_size = self.add_module(
@@ -136,15 +143,18 @@ class TensorforceModel(Model):
             'capacity', 'discount', 'estimate_actions', 'estimate_advantage', 'estimate_horizon',
             'estimate_terminal', 'horizon'
         ) for key in reward_estimation):
-            raise TensorforceError.value(name='reward_estimation', value=list(reward_estimation))
+            raise TensorforceError.value(
+                name='agent', argument='reward_estimation', value=reward_estimation,
+                hint='not from {capacity,discount,estimate_actions,estimate_advantage,'
+                     'estimate_horizon,estimate_terminal,horizon}'
+            )
         if baseline_policy is None and baseline_optimizer is None and baseline_objective is None:
             estimate_horizon = False
         else:
             estimate_horizon = 'late'
         self.estimator = self.add_module(
-            name='estimator', module=Estimator, is_trainable=False, is_saved=False,
-            values_spec=self.values_spec, horizon=reward_estimation['horizon'],
-            discount=reward_estimation.get('discount', 1.0),
+            name='estimator', module=Estimator, is_trainable=False, values_spec=self.values_spec,
+            horizon=reward_estimation['horizon'], discount=reward_estimation.get('discount', 1.0),
             estimate_horizon=reward_estimation.get('estimate_horizon', estimate_horizon),
             estimate_actions=reward_estimation.get('estimate_actions', False),
             estimate_terminal=reward_estimation.get('estimate_terminal', False),
@@ -202,13 +212,10 @@ class TensorforceModel(Model):
         self.internals_init.update(self.policy.internals_init())
         self.internals_init.update(self.baseline_policy.internals_init())
         if any(internal_init is None for internal_init in self.internals_init.values()):
-            raise TensorforceError.unexpected()
+            raise TensorforceError.required(name='model', argument='internals_init')
 
         # Register global tensors
         Module.register_tensor(name='update', spec=dict(type='long', shape=()), batched=False)
-        Module.register_tensor(
-            name='optimization', spec=dict(type='bool', shape=()), batched=False
-        )
         Module.register_tensor(
             name='dependency_starts', spec=dict(type='long', shape=()), batched=True
         )
@@ -219,13 +226,6 @@ class TensorforceModel(Model):
     def tf_initialize(self):
         super().tf_initialize()
 
-        # Internals
-        self.internals_input = OrderedDict()
-        for name, internal_spec in self.internals_spec.items():
-            self.internals_input[name] = self.add_placeholder(
-                name=name, dtype=internal_spec['type'], shape=internal_spec['shape'], batched=True
-            )
-
         # Actions
         self.actions_input = OrderedDict()
         for name, action_spec in self.actions_spec.items():
@@ -235,120 +235,139 @@ class TensorforceModel(Model):
 
     def api_experience(self):
         # Inputs
-        states = self.states_input
-        internals = self.internals_input
-        auxiliaries = self.auxiliaries_input
-        actions = self.actions_input
+        states = OrderedDict(self.states_input)
+        internals = OrderedDict(self.internals_input)
+        auxiliaries = OrderedDict(self.auxiliaries_input)
+        actions = OrderedDict(self.actions_input)
         terminal = self.terminal_input
         reward = self.reward_input
 
         zero = tf.constant(value=0, dtype=util.tf_dtype(dtype='long'))
+        true = tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
+        batch_size = tf.shape(input=terminal)[:1]
 
         # Assertions
-        assertions = [
-            # terminal: type and shape
-            tf.compat.v1.debugging.assert_type(
-                tensor=terminal, tf_type=util.tf_dtype(dtype='long')
-            ),
-            tf.compat.v1.debugging.assert_rank(x=terminal, rank=1),
-            # reward: type and shape
-            tf.compat.v1.debugging.assert_type(
-                tensor=reward, tf_type=util.tf_dtype(dtype='float')
-            ),
-            tf.compat.v1.debugging.assert_rank(x=reward, rank=1),
-            # shape of terminal equals shape of reward
-            tf.compat.v1.debugging.assert_equal(
-                x=tf.shape(input=terminal), y=tf.shape(input=reward)
-            ),
-            # buffer index is zero
-            tf.compat.v1.debugging.assert_equal(
-                x=tf.math.reduce_sum(input_tensor=self.buffer_index, axis=0),
-                y=tf.constant(value=0, dtype=util.tf_dtype(dtype='long'))
-            ),
-            # at most one terminal
-            tf.compat.v1.debugging.assert_less_equal(
-                x=tf.math.count_nonzero(input=terminal, dtype=util.tf_dtype(dtype='long')),
-                y=tf.constant(value=1, dtype=util.tf_dtype(dtype='long'))
-            ),
-            # if terminal, last timestep in batch
-            tf.compat.v1.debugging.assert_equal(
-                x=tf.math.reduce_any(input_tensor=tf.math.greater(x=terminal, y=zero)),
-                y=tf.math.greater(x=terminal[-1], y=zero)
-            )
-        ]
-        batch_size = tf.shape(input=terminal)[:1]
+        assertions = list()
+        # terminal: type and shape
+        tf.debugging.assert_type(
+            tensor=terminal, tf_type=util.tf_dtype(dtype='long'),
+            message="Agent.experience: invalid type for terminal input."
+        )
+        assertions.append(tf.debugging.assert_rank(
+            x=terminal, rank=1, message="Agent.experience: invalid shape for terminal input."
+        ))
+        # reward: type and shape
+        tf.debugging.assert_type(
+            tensor=reward, tf_type=util.tf_dtype(dtype='float'),
+            message="Agent.experience: invalid type for reward input."
+        )
+        assertions.append(tf.debugging.assert_rank(
+            x=reward, rank=1, message="Agent.experience: invalid shape for reward input."
+        ))
+        # shape of terminal equals shape of reward
+        assertions.append(tf.debugging.assert_equal(
+            x=tf.shape(input=terminal), y=tf.shape(input=reward),
+            message="Agent.experience: incompatible shapes of terminal and reward input."
+        ))
+        # buffer index is zero
+        assertions.append(tf.debugging.assert_equal(
+            x=tf.math.reduce_sum(input_tensor=self.buffer_index, axis=0),
+            y=tf.constant(value=0, dtype=util.tf_dtype(dtype='long')),
+            message="Agent.experience: cannot be called mid-episode."
+        ))
+        # at most one terminal
+        assertions.append(tf.debugging.assert_less_equal(
+            x=tf.math.count_nonzero(input=terminal, dtype=util.tf_dtype(dtype='long')),
+            y=tf.constant(value=1, dtype=util.tf_dtype(dtype='long')),
+            message="Agent.experience: input contains more than one terminal."
+        ))
+        # if terminal, last timestep in batch
+        assertions.append(tf.debugging.assert_equal(
+            x=tf.math.reduce_any(input_tensor=tf.math.greater(x=terminal, y=zero)),
+            y=tf.math.greater(x=terminal[-1], y=zero),
+            message="Agent.experience: terminal is not the last input timestep."
+        ))
         # states: type and shape
         for name, spec in self.states_spec.items():
-            assertions.append(
-                tf.compat.v1.debugging.assert_type(
-                    tensor=states[name], tf_type=util.tf_dtype(dtype=spec['type'])
-                )
+            tf.debugging.assert_type(
+                tensor=states[name], tf_type=util.tf_dtype(dtype=spec['type']),
+                message="Agent.experience: invalid type for {} state input.".format(name)
             )
-            shape = self.unprocessed_state_shape.get(name, spec['shape'])
+            shape = tf.constant(
+                value=self.unprocessed_state_shape.get(name, spec['shape']),
+                dtype=util.tf_dtype(dtype='int')
+            )
             assertions.append(
-                tf.compat.v1.debugging.assert_equal(
-                    x=tf.shape(input=states[name], out_type=tf.int32),
-                    y=tf.concat(
-                        values=(batch_size, tf.constant(value=shape, dtype=tf.int32)), axis=0
-                    )
+                tf.debugging.assert_equal(
+                    x=tf.shape(input=states[name], out_type=util.tf_dtype(dtype='int')),
+                    y=tf.concat(values=(batch_size, shape), axis=0),
+                    message="Agent.experience: invalid shape for {} state input.".format(name)
                 )
             )
         # internals: type and shape
         for name, spec in self.internals_spec.items():
-            assertions.append(
-                tf.compat.v1.debugging.assert_type(
-                    tensor=internals[name], tf_type=util.tf_dtype(dtype=spec['type'])
-                )
+            tf.debugging.assert_type(
+                tensor=internals[name], tf_type=util.tf_dtype(dtype=spec['type']),
+                message="Agent.experience: invalid type for {} internal input.".format(name)
             )
-            shape = spec['shape']
+            shape = tf.constant(value=spec['shape'], dtype=util.tf_dtype(dtype='int'))
             assertions.append(
-                tf.compat.v1.debugging.assert_equal(
-                    x=tf.shape(input=internals[name], out_type=tf.int32),
-                    y=tf.concat(
-                        values=(batch_size, tf.constant(value=shape, dtype=tf.int32)), axis=0
-                    )
+                tf.debugging.assert_equal(
+                    x=tf.shape(input=internals[name], out_type=util.tf_dtype(dtype='int')),
+                    y=tf.concat(values=(batch_size, shape), axis=0),
+                    message="Agent.experience: invalid shape for {} internal input.".format(name)
                 )
             )
         # action_masks: type and shape
         for name, spec in self.actions_spec.items():
             if spec['type'] == 'int':
                 name = name + '_mask'
+                tf.debugging.assert_type(
+                    tensor=auxiliaries[name], tf_type=util.tf_dtype(dtype='bool'),
+                    message="Agent.experience: invalid type for {} action-mask input.".format(name)
+                )
+                shape = tf.constant(
+                    value=(spec['shape'] + (spec['num_values'],)), dtype=util.tf_dtype(dtype='int')
+                )
                 assertions.append(
-                    tf.compat.v1.debugging.assert_type(
-                        tensor=auxiliaries[name], tf_type=util.tf_dtype(dtype='bool')
+                    tf.debugging.assert_equal(
+                        x=tf.shape(input=auxiliaries[name], out_type=util.tf_dtype(dtype='int')),
+                        y=tf.concat(values=(batch_size, shape), axis=0),
+                        message="Agent.experience: invalid shape for {} action-mask input.".format(
+                            name
+                        )
                     )
                 )
-                shape = spec['shape'] + (spec['num_values'],)
                 assertions.append(
-                    tf.compat.v1.debugging.assert_equal(
-                        x=tf.shape(input=auxiliaries[name], out_type=tf.int32),
-                        y=tf.concat(
-                            values=(batch_size, tf.constant(value=shape, dtype=tf.int32)), axis=0
-                        )
+                    tf.debugging.assert_equal(
+                        x=tf.reduce_all(
+                            input_tensor=tf.reduce_any(
+                                input_tensor=auxiliaries[name], axis=(len(spec['shape']) + 1)
+                            ), axis=tuple(range(len(spec['shape']) + 1))
+                        ),
+                        y=true, message="Agent.experience: at least one action has to be valid "
+                                        "for {} action-mask input.".format(name)
                     )
                 )
         # actions: type and shape
         for name, spec in self.actions_spec.items():
-            assertions.append(
-                tf.compat.v1.debugging.assert_type(
-                    tensor=actions[name], tf_type=util.tf_dtype(dtype=spec['type'])
-                )
+            tf.debugging.assert_type(
+                tensor=actions[name], tf_type=util.tf_dtype(dtype=spec['type']),
+                message="Agent.experience: invalid type for {} action input.".format(name)
             )
-            shape = spec['shape']
+            shape = tf.constant(value=spec['shape'], dtype=util.tf_dtype(dtype='int'))
             assertions.append(
-                tf.compat.v1.debugging.assert_equal(
-                    x=tf.shape(input=actions[name], out_type=tf.int32),
-                    y=tf.concat(
-                        values=(batch_size, tf.constant(value=shape, dtype=tf.int32)), axis=0
-                    )
+                tf.debugging.assert_equal(
+                    x=tf.shape(input=actions[name], out_type=util.tf_dtype(dtype='int')),
+                    y=tf.concat(values=(batch_size, shape), axis=0),
+                    message="Agent.experience: invalid shape for {} action input.".format(name)
                 )
             )
 
         # Set global tensors
         Module.update_tensors(
+            independent=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
             deterministic=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
-            independent=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
-            optimization=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
             timestep=self.global_timestep, episode=self.global_episode, update=self.global_update
         )
 
@@ -376,9 +395,8 @@ class TensorforceModel(Model):
     def api_update(self):
         # Set global tensors
         Module.update_tensors(
-            deterministic=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
             independent=tf.constant(value=False, dtype=util.tf_dtype(dtype='bool')),
-            optimization=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
+            deterministic=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool')),
             timestep=self.global_timestep, episode=self.global_episode, update=self.global_update
         )
 
@@ -409,7 +427,11 @@ class TensorforceModel(Model):
         )
 
         # TODO: handle arbitrary non-optimization horizons!
-        assertion = tf.compat.v1.debugging.assert_equal(x=dependency_horizon, y=zero)
+        assertion = tf.debugging.assert_equal(
+            x=dependency_horizon, y=zero,
+            message="Temporary: policy and baseline cannot depend on previous states unless "
+                    "optimization."
+        )
         with tf.control_dependencies(control_inputs=(assertion,)):
             some_state = next(iter(states.values()))
             if util.tf_dtype(dtype='long') in (tf.int32, tf.int64):
@@ -602,9 +624,10 @@ class TensorforceModel(Model):
         # Retrieve states, internals and actions
         dependency_horizon = self.policy.dependency_horizon(is_optimization=True)
         if self.baseline_optimizer is None:
-            assertion = tf.compat.v1.debugging.assert_equal(
+            assertion = tf.debugging.assert_equal(
                 x=dependency_horizon,
-                y=self.baseline_policy.dependency_horizon(is_optimization=True)
+                y=self.baseline_policy.dependency_horizon(is_optimization=True),
+                message="Policy and baseline depend on a different number of previous states."
             )
         else:
             assertion = dependency_horizon
@@ -621,6 +644,10 @@ class TensorforceModel(Model):
             )
 
         # Optimizer arguments
+        independent = Module.update_tensor(
+            name='independent', tensor=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
+        )
+
         variables = self.get_variables(only_trainable=True)
 
         arguments = dict(
@@ -636,8 +663,8 @@ class TensorforceModel(Model):
             )
             if self.baseline_optimizer is None and self.baseline_objective is not None:
                 kl_divergence += self.baseline_policy.kl_divergence(
-                states=states, internals=internals, auxiliaries=auxiliaries, other=other
-            )
+                    states=states, internals=internals, auxiliaries=auxiliaries, other=other
+                )
             return kl_divergence
 
         if self.global_model is None:
@@ -650,7 +677,7 @@ class TensorforceModel(Model):
         )
 
         if self.baseline_optimizer is None and self.baseline_objective is not None:
-            util.disjoint_update(
+            util.deep_disjoint_update(
                 target=kwargs,
                 source=self.baseline_objective.optimizer_arguments(policy=self.baseline_policy)
             )
@@ -791,6 +818,8 @@ class TensorforceModel(Model):
                         pass_tensors=optimized
                     )
 
+        Module.update_tensor(name='independent', tensor=independent)
+
         return optimized
 
     def tf_total_loss(self, states, internals, auxiliaries, actions, reward, **kwargs):
@@ -864,6 +893,10 @@ class TensorforceModel(Model):
         )
 
         # Optimizer arguments
+        independent = Module.update_tensor(
+            name='independent', tensor=tf.constant(value=True, dtype=util.tf_dtype(dtype='bool'))
+        )
+
         variables = self.baseline_policy.get_variables(only_trainable=True)
 
         arguments = dict(
@@ -932,6 +965,8 @@ class TensorforceModel(Model):
                     label=('baseline-loss', 'losses'), name='baseline-loss', tensor=loss,
                     pass_tensors=optimized
                 )
+
+        independent = Module.update_tensor(name='independent', tensor=independent)
 
         return optimized
 

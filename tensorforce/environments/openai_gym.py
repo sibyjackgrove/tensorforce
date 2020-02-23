@@ -44,9 +44,6 @@ class OpenAIGym(Environment):
         reward_threshold (float): Gym environment argument, the reward threshold before the task is
             considered solved
             (<span style="color:#00C000"><b>default</b></span>: Gym default).
-        tags (dict): Gym environment argument, a set of arbitrary key-value tags on this
-            environment, including simple property=True tags
-            (<span style="color:#00C000"><b>default</b></span>: Gym default).
         drop_states_indices (list[int]): Drop states indices
             (<span style="color:#00C000"><b>default</b></span>: none).
         visualize_directory (string): Visualization output directory
@@ -61,22 +58,33 @@ class OpenAIGym(Environment):
         return list(gym.envs.registry.env_specs)
 
     @classmethod
-    def create_level(cls, level, max_episode_steps, reward_threshold, tags, **kwargs):
+    def create_level(cls, level, max_episode_steps, reward_threshold, **kwargs):
         import gym
+
+        requires_register = False
 
         # Find level
         if level not in gym.envs.registry.env_specs:
+            if max_episode_steps is None:  # interpret as false if level does not exist
+                max_episode_steps = False
+            env_specs = list(gym.envs.registry.env_specs)
             if level + '-v0' in gym.envs.registry.env_specs:
-                level = level + '-v0'
+                env_specs.insert(0, level + '-v0')
+            for name in env_specs:
+                if level == name[:name.rindex('-v')]:
+                    if max_episode_steps is False and \
+                            gym.envs.registry.env_specs[name].max_episode_steps is not None:
+                        continue
+                    elif max_episode_steps != gym.envs.registry.env_specs[name].max_episode_steps:
+                        continue
+                    level = name
+                    break
             else:
-                for name in gym.envs.registry.env_specs:
-                    if level == name[:name.rindex('-v')]:
-                        level = name
-                        break
+                level = env_specs[0]
+                requires_register = True
         assert level in cls.levels()
 
         # Check/update attributes
-        requires_register = False
         if max_episode_steps is None:
             max_episode_steps = gym.envs.registry.env_specs[level].max_episode_steps
             if max_episode_steps is None:
@@ -91,11 +99,11 @@ class OpenAIGym(Environment):
             reward_threshold = gym.envs.registry.env_specs[level].reward_threshold
         elif reward_threshold != gym.envs.registry.env_specs[level].reward_threshold:
             requires_register = True
-        if tags is None:
-            tags = dict(gym.envs.registry.env_specs[level].tags)
-            if 'wrapper_config.TimeLimit.max_episode_steps' in tags and \
-                    max_episode_steps is not None:
-                tags.pop('wrapper_config.TimeLimit.max_episode_steps')
+        # if tags is None:
+        #     tags = dict(gym.envs.registry.env_specs[level].tags)
+        #     if 'wrapper_config.TimeLimit.max_episode_steps' in tags and \
+        #             max_episode_steps is not None:
+        #         tags.pop('wrapper_config.TimeLimit.max_episode_steps')
         elif tags != gym.envs.registry.env_specs[level].tags:
             requires_register = True
 
@@ -118,8 +126,9 @@ class OpenAIGym(Environment):
 
             gym.register(
                 id=level, entry_point=entry_point, reward_threshold=reward_threshold,
-                kwargs=_kwargs, nondeterministic=nondeterministic, tags=tags,
-                max_episode_steps=(None if max_episode_steps is False else max_episode_steps)
+                nondeterministic=nondeterministic,
+                max_episode_steps=(None if max_episode_steps is False else max_episode_steps),
+                kwargs=_kwargs
             )
             assert level in cls.levels()
 
@@ -127,8 +136,7 @@ class OpenAIGym(Environment):
 
     def __init__(
         self, level, visualize=False, max_episode_steps=None, terminal_reward=0.0,
-        reward_threshold=None, tags=None, drop_states_indices=None, visualize_directory=None,
-        **kwargs
+        reward_threshold=None, drop_states_indices=None, visualize_directory=None, **kwargs
     ):
         super().__init__()
 
@@ -143,10 +151,14 @@ class OpenAIGym(Environment):
             self.environment = self.level
             self.level = self.level.__class__.__name__
             self.max_episode_steps = max_episode_steps
+        elif isinstance(level, type) and issubclass(level, gym.Env):
+            self.environment = self.level(**kwargs)
+            self.level = self.level.__class__.__name__
+            self.max_episode_steps = max_episode_steps
         else:
             self.environment, self.max_episode_steps = self.__class__.create_level(
                 level=self.level, max_episode_steps=max_episode_steps,
-                reward_threshold=reward_threshold, tags=tags, **kwargs
+                reward_threshold=reward_threshold, **kwargs
             )
 
         if visualize_directory is not None:
@@ -235,31 +247,33 @@ class OpenAIGym(Environment):
             return dict(type='bool', shape=space.n)
 
         elif isinstance(space, gym.spaces.MultiDiscrete):
-            num_discrete_space = len(space.nvec)
-            if (space.nvec == space.nvec[0]).all():
-                return dict(type='int', shape=num_discrete_space, num_values=space.nvec[0])
+            if (space.nvec == space.nvec.item(0)).all():
+                return dict(type='int', shape=space.nvec.shape, num_values=space.nvec.item(0))
             else:
                 specs = dict()
-                for n in range(num_discrete_space):
-                    specs['gymmdc{}'.format(n)] = dict(
-                        type='int', shape=(), num_values=space.nvec[n]
+                nvec = space.nvec.flatten()
+                shape = '-'.join(str(x) for x in space.nvec.shape)
+                for n in range(nvec.shape[0]):
+                    specs['gymmdc{}-{}'.format(n, shape)] = dict(
+                        type='int', shape=(), num_values=nvec[n]
                     )
                 return specs
 
         elif isinstance(space, gym.spaces.Box):
             if ignore_value_bounds:
                 return dict(type='float', shape=space.shape)
-            elif (space.low == space.low[0]).all() and (space.high == space.high[0]).all():
+            elif (space.low == space.low.item(0)).all() and (space.high == space.high.item(0)).all():
                 return dict(
-                    type='float', shape=space.shape, min_value=space.low[0],
-                    max_value=space.high[0]
+                    type='float', shape=space.shape, min_value=space.low.item(0),
+                    max_value=space.high.item(0)
                 )
             else:
                 specs = dict()
                 low = space.low.flatten()
                 high = space.high.flatten()
+                shape = '-'.join(str(x) for x in space.low.shape)
                 for n in range(low.shape[0]):
-                    specs['gymbox{}'.format(n)] = dict(
+                    specs['gymbox{}-{}'.format(n, shape)] = dict(
                         type='float', shape=(), min_value=low[n], max_value=high[n]
                     )
                 return specs
@@ -299,12 +313,15 @@ class OpenAIGym(Environment):
         if isinstance(state, tuple):
             states = dict()
             for n, state in enumerate(state):
-                if 'gymtpl{}-{}'.format(n, name) in states_spec:
-                    spec = states_spec['gymtpl{}-{}'.format(n, name)]
-                elif 'gymtpl{}'.format(n) in states_spec:
+                if 'gymtpl{}'.format(n) in states_spec:
                     spec = states_spec['gymtpl{}'.format(n)]
                 else:
-                    raise TensorforceError.unexpected()
+                    spec = None
+                    for name in states_spec:
+                        if name.startswith('gymtpl{}-'.format(n)):
+                            assert spec is None
+                            spec = states_spec[name]
+                    assert spec is not None
                 state = OpenAIGym.flatten_state(state=state, states_spec=spec)
                 if isinstance(state, dict):
                     for name, state in state.items():
@@ -316,12 +333,15 @@ class OpenAIGym(Environment):
         elif isinstance(state, dict):
             states = dict()
             for state_name, state in state.items():
-                if '{}-{}'.format(state_name, name) in states_spec:
-                    spec = states_spec['{}-{}'.format(state_name, name)]
-                elif state_name in states_spec:
+                if state_name in states_spec:
                     spec = states_spec[state_name]
                 else:
-                    raise TensorforceError.unexpected()
+                    spec = None
+                    for name in states_spec:
+                        if name.startswith('{}-'.format(state_name)):
+                            assert spec is None
+                            spec = states_spec[name]
+                    assert spec is not None
                 state = OpenAIGym.flatten_state(state=state, states_spec=spec)
                 if isinstance(state, dict):
                     for name, state in state.items():
@@ -335,14 +355,18 @@ class OpenAIGym(Environment):
 
         elif 'gymbox0' in states_spec:
             states = dict()
+            state = state.flatten()
+            shape = '-'.join(str(x) for x in state.shape)
             for n in range(state.shape[0]):
-                states['gymbox{}'.format(n)] = state[n]
+                states['gymbox{}-{}'.format(n, shape)] = state[n]
             return states
 
         elif 'gymmdc0' in states_spec:
             states = dict()
+            state = state.flatten()
+            shape = '-'.join(str(x) for x in state.shape)
             for n in range(state.shape[0]):
-                states['gymmdc{}'.format(n)] = state[n]
+                states['gymmdc{}-{}'.format(n, shape)] = state[n]
             return states
 
         else:
@@ -374,7 +398,13 @@ class OpenAIGym(Environment):
                 else:
                     break
                 n += 1
-            return tuple(actions)
+            if all(name.startswith('gymmdc') for name in action) or \
+                    all(name.startswith('gymbox') for name in action):
+                name = next(iter(action))
+                shape = tuple(int(x) for x in name[name.index('-') + 1:].split('-'))
+                return np.array(object=actions).reshape(shape=shape)
+            else:
+                return tuple(actions)
 
         else:
             actions = dict()

@@ -2,6 +2,10 @@
 *.pyc
 *.vscode
 .DS_Store
+CONTRIBUTING.html
+PROJECTS.html
+README.html
+UPDATE_NOTES.html
 
 /.eggs/
 /.pytest_cache/
@@ -9,6 +13,7 @@
 /build/
 /docs/_*
 /tensorforce.egg-info/
+/Tensorforce.egg-info/
 /_vizdoom/
 
 /logs/
@@ -19,4 +24,4 @@
 /tensorboard/
 /tuner/
 
-*/_old*
+*_old*
